@@ -5,7 +5,7 @@ import { SYSTEM_PROMPT } from './prompt.mjs';
 const MAX_STEPS = 8;
 
 export class Claude {
-  constructor({ apiKey, model, baseUrl = 'https://api.anthropic.com', fetchImpl = fetch, maxTokens = 2048, webSearch = false }) {
+  constructor({ apiKey, model, baseUrl = 'https://api.anthropic.com', fetchImpl = (...a) => fetch(...a), maxTokens = 2048, webSearch = false }) {
     this.apiKey = apiKey;
     this.model = model;
     this.baseUrl = baseUrl;

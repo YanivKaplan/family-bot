@@ -1,6 +1,6 @@
 // Minimal Telegram Bot API client (built-in fetch only).
 export class Telegram {
-  constructor({ token, baseUrl = 'https://api.telegram.org', fetchImpl = fetch }) {
+  constructor({ token, baseUrl = 'https://api.telegram.org', fetchImpl = (...a) => fetch(...a) }) {
     this.token = token;
     this.baseUrl = baseUrl;
     this.fetch = fetchImpl;
