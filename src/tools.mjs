@@ -149,7 +149,8 @@ export const WEB_SEARCH_TOOL = {
   type: 'web_search_20250305',
   name: 'web_search',
   max_uses: 3,
-  user_location: { type: 'approximate', country: 'IL', timezone: 'Asia/Jerusalem' },
+  // ponytail: API rejects country 'IL'; timezone alone still biases results local.
+  user_location: { type: 'approximate', timezone: 'Asia/Jerusalem' },
 };
 
 const fmtDue = (t, tz) => (t.due_at ? formatHe(t.due_at, tz, { withTime: !!t.due_has_time }) : null);
