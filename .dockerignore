@@ -1,0 +1,7 @@
+.git
+.env
+.dev.vars
+data
+test
+*.db
+.wrangler

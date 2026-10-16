@@ -1,0 +1,32 @@
+# Cloudflare Workers configuration (free plan).
+name = "family-home-bot"
+main = "src/worker.mjs"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+# Reminders and the morning summary: every minute.
+[triggers]
+crons = ["* * * * *"]
+
+# The household database (SQLite on Cloudflare D1, free: 5 GB).
+# The "Deploy to Cloudflare" button and `wrangler deploy` create it automatically.
+[[d1_databases]]
+binding = "DB"
+database_name = "family-home-bot"
+
+[observability]
+enabled = true
+
+# Settings that are not secret. Change them in the Cloudflare dashboard (Settings > Variables) or here.
+[vars]
+HOUSE_TZ = "Asia/Jerusalem"
+WAKE_WORDS = "בוט,עוזר,bot"
+DIGEST_TIME = "07:30"
+CLAUDE_MODEL = "claude-sonnet-5-5"
+MAX_DAILY_CALLS = "300"
+MAX_TOKENS = "2048"
+WEB_SEARCH = "true"
+
+# Secrets (set them as encrypted secrets, never here):
+#   TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, WEBHOOK_SECRET, ALLOWED_CHAT_IDS, ALLOWED_USER_IDS, FAMILY_MEMBERS
+# See .dev.vars.example.

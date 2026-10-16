@@ -1,0 +1,13 @@
+# Secrets for Cloudflare. The "Deploy to Cloudflare" button asks for each one.
+# The bot token from @BotFather
+TELEGRAM_BOT_TOKEN=
+# A Claude API key (platform.claude.com) from a workspace only for this bot
+ANTHROPIC_API_KEY=
+# 40-64 random characters: letters, digits, _ and - only
+WEBHOOK_SECRET=
+# The family group id (a negative number). Send /id in the group. Empty = setup mode
+ALLOWED_CHAT_IDS=
+# Telegram user ids of the family, comma-separated. Send /id to the bot
+ALLOWED_USER_IDS=
+# Family names, comma-separated (optional)
+FAMILY_MEMBERS=
