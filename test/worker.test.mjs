@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import worker from '../src/worker.mjs';
+import { HouseDB } from '../src/db.mjs';
+import { D1Adapter } from '../src/d1.mjs';
+import { runTool } from '../src/tools.mjs';
 
 // Minimal D1 binding: prepare().bind().run/first/all, batch.
 function fakeD1() {
@@ -18,6 +21,7 @@ function fakeD1() {
 }
 
 const SECRET = 'x'.repeat(40);
+const SHOP = 's'.repeat(40);
 const GROUP = -1001, DAD = 11, OUTSIDER = 77;
 const sent = [];
 let claudeCalls = 0;
@@ -45,7 +49,7 @@ before(async () => {
   env = {
     DB: fakeD1(), WEBHOOK_SECRET: SECRET, TELEGRAM_BOT_TOKEN: '500:abc', ANTHROPIC_API_KEY: 'k',
     ALLOWED_CHAT_IDS: String(GROUP), ALLOWED_USER_IDS: String(DAD), DIGEST_TIME: '',
-    TELEGRAM_API_BASE: tg.url, ANTHROPIC_BASE_URL: cl.url,
+    TELEGRAM_API_BASE: tg.url, ANTHROPIC_BASE_URL: cl.url, SHOPPER_SECRET: SHOP,
   };
 });
 after(() => { tg.s.close(); cl.s.close(); });
@@ -94,4 +98,49 @@ test('cron runs the reminder tick', async () => {
 test('refuses to run with a short webhook secret', async () => {
   const res = await worker.fetch(new Request('https://bot.example.workers.dev/telegram', { method: 'POST', body: '{}' }), { ...env, WEBHOOK_SECRET: 'short' });
   assert.equal(res.status, 503);
+});
+
+const shopper = (path, body = {}, secret = SHOP) => worker.fetch(new Request(`https://bot.example.workers.dev/shopper/${path}`, {
+  method: 'POST', headers: { 'content-type': 'application/json', ...(secret ? { authorization: `Bearer ${secret}` } : {}) }, body: JSON.stringify(body),
+}), env);
+
+test('online order: confirmed list -> shopper takes it once -> report goes to the group', async () => {
+  assert.equal((await shopper('next', {}, null)).status, 403);
+  assert.equal((await shopper('next', {}, 'z'.repeat(40))).status, 403);
+  assert.equal((await worker.fetch(new Request('https://bot.example.workers.dev/shopper/next', { method: 'POST' }), { ...env, SHOPPER_SECRET: '' })).status, 404);
+  assert.deepEqual(await (await shopper('next')).json(), { job: null });
+
+  const db = new HouseDB(new D1Adapter(env.DB));
+  const [milk, eggs] = await db.addEntries([{ list: 'סופר', text: 'חלב', fields: { qty: 2 } }, { list: 'סופר', text: 'ביצים' }], 'X');
+  const ctx = { db, tz: 'Asia/Jerusalem', chatId: GROUP, user: 'X', ordersEnabled: true };
+  await assert.rejects(runTool('order_start', { entry_ids: [milk.id] }, { ...ctx, ordersEnabled: false }), /לא מוגדרת/);
+  await assert.rejects(runTool('order_start', { entry_ids: [999] }, ctx), /אין פריט פתוח/);
+  const { order } = await runTool('order_start', { entry_ids: [milk.id, eggs.id] }, ctx);
+  assert.equal(order.items, 2);
+  await assert.rejects(runTool('order_start', { entry_ids: [milk.id] }, ctx), /כבר יש הזמנה/);
+
+  const { job } = await (await shopper('next')).json();
+  assert.deepEqual(job.items, [{ id: milk.id, text: 'חלב', qty: 2 }, { id: eggs.id, text: 'ביצים' }]);
+  assert.deepEqual(await (await shopper('next')).json(), { job: null }, 'taken only once');
+
+  sent.length = 0;
+  await shopper('report', { id: job.id, status: 'needs_human', text: 'צריך להתחבר', view_url: 'http://100.1.1.1:6080/vnc.html' });
+  assert.match(sent.at(-1).text, /צריך להתחבר[\s\S]*6080/);
+  const done = await shopper('report', {
+    id: job.id, status: 'done', total: '₪23.80', checkout_url: 'https://www.carrefour.co.il/checkout',
+    added: [{ item: 'חלב', product: 'חלב תנובה 3% 1 ליטר', qty: 2 }], missing: [{ item: 'ביצים', reason: 'אזל מהמלאי' }],
+  });
+  assert.equal(done.status, 200);
+  assert.equal(sent.at(-1).chat_id, GROUP);
+  assert.match(sent.at(-1).text, /מוכן \(1 מוצרים\), סה"כ ₪23\.80[\s\S]*חלב תנובה 3% 1 ליטר ×2[\s\S]*ביצים \(אזל מהמלאי\)[\s\S]*carrefour\.co\.il\/checkout/);
+  assert.equal((await shopper('report', { id: job.id, status: 'done' })).status, 409, 'a finished order takes no more reports');
+  assert.ok(await runTool('order_start', { entry_ids: [eggs.id] }, ctx), 'a new order after the last one finished');
+});
+
+test('the shopper borrows the bot\'s Claude key, with its own daily count', async () => {
+  const before = claudeCalls;
+  const res = await shopper('claude', { system: 's', tools: [], messages: [{ role: 'user', content: 'hi' }] });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).content[0].text, 'שלום!');
+  assert.equal(claudeCalls, before + 1);
 });

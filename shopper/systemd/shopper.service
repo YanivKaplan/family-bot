@@ -1,0 +1,13 @@
+[Unit]
+Description=Family bot shopper: fills the online cart for confirmed orders
+Requires=shopper-chrome.service
+After=shopper-chrome.service
+
+[Service]
+WorkingDirectory=%h/agents/family-bot
+ExecStart=/usr/bin/node shopper/main.mjs
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

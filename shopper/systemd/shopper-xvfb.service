@@ -1,0 +1,9 @@
+[Unit]
+Description=Virtual screen for the shopper's browser
+
+[Service]
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1366x900x24 -nolisten tcp
+Restart=always
+
+[Install]
+WantedBy=default.target

@@ -1,5 +1,6 @@
 // The tools that Claude can call. Each tool changes only household data in the DB.
 import { localToUtc, parseLocal, formatHe, nextOccurrence, localDate } from './time.mjs';
+import { startOrder } from './order.mjs';
 
 const ids = { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 };
 const REPEAT = {
@@ -137,6 +138,12 @@ export const TOOLS = [
     description: 'מחיקת רשומות מהזיכרון לפי id, רק לבקשה מפורשת.',
     input_schema: { type: 'object', properties: { ids }, required: ['ids'] },
   },
+  {
+    name: 'order_start',
+    description: 'הזמנת קניות אונליין מקרפור: רובוט במחשב של הבית ממלא את סל הקניות באתר, עוצר לפני התשלום, ושולח לצ\'אט הזה קישור לתשלום. ' +
+      'קרא רק אחרי שהצגת את הרשימה ובני המשפחה אישרו במפורש בהודעה נפרדת שהיא מלאה. entry_ids = הפריטים שאושרו.',
+    input_schema: { type: 'object', properties: { entry_ids: ids, store: { type: 'string', enum: ['carrefour'] } }, required: ['entry_ids'] },
+  },
 ];
 
 // Server tool: Anthropic runs the search. Billed per search ($10 per 1,000).
@@ -238,6 +245,17 @@ export async function runTool(name, input, ctx) {
     }
     case 'memory_delete':
       return { deleted_ids: await db.deleteNotes(input.ids) };
+    case 'order_start': {
+      if (!ctx.ordersEnabled) throw new Error('הזמנה אונליין עוד לא מוגדרת בבוט');
+      const entries = [];
+      for (const id of input.entry_ids) {
+        const e = await db.entry(id);
+        if (!e || e.done_at) throw new Error(`אין פריט פתוח ${id}`);
+        entries.push(e);
+      }
+      const job = await startOrder(db, { chatId, by: user, store: input.store, entries }, now);
+      return { order: { id: job.id, items: job.items.length, status: 'נשלח לרובוט; הוא יכתוב כאן כשהסל מוכן' } };
+    }
     default:
       throw new Error(`כלי לא מוכר: ${name}`);
   }

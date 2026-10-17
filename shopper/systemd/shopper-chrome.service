@@ -1,0 +1,13 @@
+[Unit]
+Description=The shopper's browser (DevTools on 127.0.0.1:9222 only; its profile keeps the store login)
+Requires=shopper-xvfb.service
+After=shopper-xvfb.service
+
+[Service]
+Environment=DISPLAY=:99
+ExecStart=/usr/bin/chromium-browser --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir=%h/.local/share/family-shopper/chrome --no-first-run --no-default-browser-check --lang=he-IL --window-size=1366,900 --start-maximized --restore-last-session
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

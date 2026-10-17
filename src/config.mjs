@@ -13,6 +13,8 @@ export function loadConfig(env) {
     telegramToken: env.TELEGRAM_BOT_TOKEN,
     telegramBaseUrl: env.TELEGRAM_API_BASE || 'https://api.telegram.org',
     webhookSecret: env.WEBHOOK_SECRET || null,
+    shopperSecret: env.SHOPPER_SECRET || null, // the home machine that fills online carts (shopper/); empty = off
+    shopperModel: env.SHOPPER_MODEL || 'claude-sonnet-5-5',
     botId: Number(String(env.TELEGRAM_BOT_TOKEN).split(':')[0]) || null, // the token starts with the bot id
     botUsername: env.BOT_USERNAME || null,
     anthropicKey: env.ANTHROPIC_API_KEY,

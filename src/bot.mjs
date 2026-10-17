@@ -140,7 +140,7 @@ export class FamilyBot {
     const userText = systemNote ? `[מערכת] ${text}` : `${user}: ${text}`;
     const loc = await db.get(`loc:${chatId}`);
     const ctx = {
-      db, tz: cfg.tz, chatId, user, now,
+      db, tz: cfg.tz, chatId, user, now, ordersEnabled: Boolean(cfg.shopperSecret),
       lastLocation: loc && now - loc.ts < LOCATION_TTL_MS ? loc : null,
     };
     const contextText = contextBlock({
