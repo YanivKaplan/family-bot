@@ -99,9 +99,8 @@ export async function createHarness({ env = localEnv(), dbPath = ':memory:', sta
 
     async state() {
       return {
-        items: await raw.openItems(),
-        tasks: await raw.openTasks(),
-        done: await raw.recentDone(clock - 30 * 86_400_000),
+        entries: await raw.entries(),
+        done: await raw.entries({ doneSince: clock - 30 * 86_400_000 }),
         reminders: await raw.activeReminders(),
         notes: await raw.notes(),
       };

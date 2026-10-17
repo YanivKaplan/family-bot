@@ -77,7 +77,7 @@ test('wake word -> Claude -> tool -> reply in the group', async () => {
   script = (body) => {
     const last = body.messages.at(-1);
     if (typeof last.content === 'string') {
-      return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tu1', name: 'shopping_add', input: { items: [{ name: 'חלב', qty: '2' }, { name: 'ביצים' }] } }] };
+      return { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'tu1', name: 'list_add', input: { entries: [{ list: 'סופר', text: 'חלב', fields: { qty: 2 } }, { list: 'סופר', text: 'ביצים' }] } }] };
     }
     assert.equal(last.content[0].type, 'tool_result');
     return { stop_reason: 'end_turn', content: [{ type: 'text', text: 'הוספתי לסופר: חלב ×2, ביצים' }] };
@@ -89,7 +89,7 @@ test('wake word -> Claude -> tool -> reply in the group', async () => {
   assert.match(first.system[1].text, /הזמן עכשיו/);
   assert.match(first.system[1].text, /יניב: מישהו ראה את המפתחות\?/, 'earlier group chatter is context');
   assert.ok(first.system[0].cache_control, 'system prompt is cached');
-  assert.equal((await db.openItems()).length, 2);
+  assert.equal((await db.entries()).length, 2);
   const s = sends().at(-1);
   assert.equal(s.body.chat_id, GROUP);
   assert.equal(s.body.text, 'הוספתי לסופר: חלב ×2, ביצים');
@@ -113,7 +113,7 @@ test('reply to the bot triggers it; /list needs no model', async () => {
   reset();
   await bot.handle(groupMsg('/list@home_helper_bot'));
   assert.equal(claudeReqs.length, 0);
-  assert.match(sends().at(-1).body.text, /🛒 סופר:\n• חלב × 2\n• ביצים/);
+  assert.match(sends().at(-1).body.text, /📋 סופר:\n• חלב × 2\n• ביצים/);
   reset();
   await bot.handle(groupMsg('/list@other_bot'));
   assert.equal(sends().length, 0, 'commands for another bot are ignored');
@@ -141,7 +141,7 @@ test('private chat with a family member works without a wake word', async () => 
 
 test('live location near a saved place: one short message, once per day', async () => {
   await db.savePlace({ name: 'קניון הזהב', kind: 'קניון', lat: 31.9897, lon: 34.7743 });
-  await db.addTask({ title: 'להחליף נעליים', places: ['קניון'] }, 'יניב');
+  await db.addEntries([{ list: 'משימות', text: 'להחליף נעליים', fields: { places: ['קניון'] } }], 'יניב');
   reset();
   script = (body) => {
     assert.match(body.messages.at(-1).content, /^\[מערכת\] מיכל נמצא\/ת עכשיו ליד "קניון הזהב"/);
@@ -182,7 +182,7 @@ test('scheduler sends due reminders once and moves repeating ones', async () => 
 });
 
 test('morning digest once per day', async () => {
-  await db.addTask({ title: 'לשלם ארנונה', due_at: localToUtc('2026-10-19T12:00', TZ), due_has_time: 1 }, 'יניב');
+  await db.addEntries([{ list: 'משימות', text: 'לשלם ארנונה', fields: { due: '2026-10-19T12:00' } }], 'יניב');
   reset();
   const morning = localToUtc('2026-10-19T07:31', TZ);
   await bot.tick(morning);

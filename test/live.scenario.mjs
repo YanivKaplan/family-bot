@@ -42,29 +42,28 @@ async function say(text, opts) {
   assert.ok(r.ms < MAX_MS, `answer in ${r.ms} ms (max ${MAX_MS})`);
   return r;
 }
-const names = (rows) => rows.map((r) => r.name ?? r.title).join(' | ');
-const hasItem = (s, re, list) => s.items.some((i) => re.test(i.name) && (!list || list.test(i.list)));
-const hasTask = (rows, re) => rows.some((t) => re.test(t.title));
+// Every list is the same generic entries table; tests check by text and list name only.
+const names = (rows) => rows.map((e) => `${e.list}/${e.text}`).join(' | ');
+const hasItem = (s, re, list) => s.entries.some((e) => re.test(e.text) && (!list || list.test(e.list)));
+const hasTask = (rows, re) => rows.some((e) => re.test(e.text));
+const find = (rows, re) => rows.find((e) => re.test(e.text));
 
 test('Sunday: baby shopping list', { skip }, async () => {
   await say('בוט, תוסיף לסופר חיתולים מידה 1, מגבונים לתינוק, חלב ולחם');
   const s = await h.state();
-  for (const re of [/חיתול/, /מגבונ/, /חלב/, /לחם/]) assert.ok(hasItem(s, re, /סופר/), `${re} in סופר: ${names(s.items)}`);
+  for (const re of [/חיתול/, /מגבונ/, /חלב/, /לחם/]) assert.ok(hasItem(s, re, /סופר/), `${re} in סופר: ${names(s.entries)}`);
 });
 
 test('Sunday: baby tasks with a due date and a person', { skip }, async () => {
   await say('בוט, משימה: לקנות עגלה לתינוק, עד יום חמישי');
   await say('בוט, תוסיף משימה למיכל: לקבוע תור לטיפת חלב', { as: 'מיכל' });
   const s = await h.state();
-  const stroller = s.tasks.find((t) => /עגלה/.test(t.title));
-  assert.ok(stroller, `stroller task: ${names(s.tasks)}`);
-  assert.ok(stroller.due_at, 'stroller task has a due date');
-  // Thursday 2026-10-22, local. Allow the whole day.
-  const due = new Date(stroller.due_at).toLocaleDateString('en-CA', { timeZone: h.config.tz });
-  assert.equal(due, '2026-10-22', 'due Thursday');
-  const clinic = s.tasks.find((t) => /טיפת חלב/.test(t.title));
-  assert.ok(clinic, `clinic task: ${names(s.tasks)}`);
-  assert.equal(clinic.assignee, 'מיכל');
+  const stroller = find(s.entries, /עגלה/);
+  assert.ok(stroller, `stroller task: ${names(s.entries)}`);
+  assert.equal(stroller.fields.due?.slice(0, 10), '2026-10-22', `due Thursday: ${JSON.stringify(stroller.fields)}`);
+  const clinic = find(s.entries, /טיפת חלב/);
+  assert.ok(clinic, `clinic task: ${names(s.entries)}`);
+  assert.equal(clinic.fields.assignee, 'מיכל');
 });
 
 test('Sunday: weekly chore reminder', { skip }, async () => {
@@ -81,20 +80,20 @@ test('Monday: what do we need to buy?', { skip }, async () => {
   const r = await say('בוט, מה צריך לקנות?');
   assert.match(r.reply, /חיתול/);
   assert.match(r.reply, /לחם/);
-  assert.equal(r.calls.filter((c) => /add|mark|clear/i.test(c.fn)).length, 0, 'a question changes nothing');
+  assert.equal(r.calls.filter((c) => /add|update|delete|rename/i.test(c.fn)).length, 0, 'a question changes nothing');
 });
 
 test('Monday: bought some items', { skip }, async () => {
   await say('בוט, קניתי חלב ולחם', { as: 'מיכל' });
   const s = await h.state();
-  assert.ok(!hasItem(s, /חלב/) && !hasItem(s, /לחם/), `milk and bread done: ${names(s.items)}`);
+  assert.ok(!hasItem(s, /^חלב/) && !hasItem(s, /לחם/), `milk and bread done: ${names(s.entries)}`);
   assert.ok(hasItem(s, /חיתול/) && hasItem(s, /מגבונ/), 'diapers and wipes still open');
 });
 
 test('Monday: a second list (pharmacy)', { skip }, async () => {
   await say('בוט, תוסיף לפארם משחה נגד תפרחת חיתולים וטיפות ויטמין D לתינוק');
   const s = await h.state();
-  assert.ok(hasItem(s, /משחה/, /פארם|מרקחת/), `cream in pharmacy list: ${JSON.stringify(s.items.map((i) => [i.list, i.name]))}`);
+  assert.ok(hasItem(s, /משחה/, /פארם|מרקחת/), `cream in pharmacy list: ${names(s.entries)}`);
   assert.ok(hasItem(s, /ויטמין|D/i, /פארם|מרקחת/), 'vitamin D in pharmacy list');
 });
 
@@ -102,8 +101,8 @@ test('Tuesday: house chores as tasks', { skip }, async () => {
   h.setTime('2026-10-20T10:00');
   await say('בוט, מטלות לבית לפני הלידה: לנקות את המקרר, ולכבס את הבגדים של התינוק');
   const s = await h.state();
-  assert.ok(hasTask(s.tasks, /מקרר/), `fridge task: ${names(s.tasks)}`);
-  assert.ok(hasTask(s.tasks, /כבס|כביסה/), `laundry task: ${names(s.tasks)}`);
+  assert.ok(hasTask(s.entries, /מקרר/), `fridge task: ${names(s.entries)}`);
+  assert.ok(hasTask(s.entries, /כבס|כביסה/), `laundry task: ${names(s.entries)}`);
 });
 
 test('Tuesday 20:00: the reminder is sent, and moves to next week', { skip }, async () => {
@@ -124,9 +123,9 @@ test('Wednesday: what is left for the baby?', { skip }, async () => {
 test('Wednesday: task done', { skip }, async () => {
   await say('בוט, קבעתי תור לטיפת חלב', { as: 'מיכל' });
   const s = await h.state();
-  assert.ok(!hasTask(s.tasks, /טיפת חלב/), 'clinic task closed');
+  assert.ok(!hasTask(s.entries, /טיפת חלב/), 'clinic task closed');
   assert.ok(hasTask(s.done, /טיפת חלב/), 'clinic task in done');
-  assert.ok(hasTask(s.tasks, /עגלה/), 'stroller task still open');
+  assert.ok(hasTask(s.entries, /עגלה/), 'stroller task still open');
 });
 
 test('Thursday: at the supermarket', { skip }, async () => {
@@ -146,7 +145,7 @@ test('Friday: a general question (no data change)', { skip }, async () => {
   h.setTime('2026-10-23T09:00');
   const r = await say('בוט, כמה חיתולים בערך תינוק בן חודש צריך ביום?');
   assert.match(r.reply, /\d/, 'a number in the answer');
-  assert.equal(r.calls.filter((c) => /add|mark|clear|save/i.test(c.fn)).length, 0, 'a question changes nothing');
+  assert.equal(r.calls.filter((c) => /add|update|delete|rename|save/i.test(c.fn)).length, 0, 'a question changes nothing');
 });
 
 test('Friday: uses the memory', { skip }, async () => {
@@ -160,12 +159,52 @@ test('Saturday: understands the group chat before the call', { skip }, async () 
   await h.say('אוקיי, אני בדרך לסופר-פארם, אקנה');
   await say('בוט, תוסיף לפארם את מה שמיכל צריכה');
   const s = await h.state();
-  assert.ok(hasItem(s, /קרם/, /פארם|מרקחת/), `cream: ${names(s.items)}`);
-  assert.ok(hasItem(s, /רפיד/, /פארם|מרקחת/), `pads: ${names(s.items)}`);
+  assert.ok(hasItem(s, /קרם/, /פארם|מרקחת/), `cream: ${names(s.entries)}`);
+  assert.ok(hasItem(s, /רפיד/, /פארם|מרקחת/), `pads: ${names(s.entries)}`);
 });
 
 test('Not for the bot: no wake word in the group', { skip }, async () => {
   const r = await h.say('מישהו ראה את המפתחות?');
   assert.equal(r.reply, '', 'no answer');
   assert.equal(r.usage, null, 'no Claude call');
+});
+
+test('Edit: change an item and move it to another list', { skip }, async () => {
+  await say('בוט, תשנה את החיתולים לכמות 3 חבילות ותעביר אותם לרשימת פארם');
+  const d = (await h.state()).entries.filter((e) => /חיתול/.test(e.text) && !/משחה/.test(e.text));
+  assert.equal(d.length, 1, `one diapers item: ${JSON.stringify(d)}`);
+  assert.match(d[0].list, /פארם/);
+  assert.match(String(d[0].fields.qty ?? ''), /3/);
+});
+
+test('Edit: move the weekly reminder to another time', { skip }, async () => {
+  await say('בוט, תשנה את התזכורת של הפח ליום רביעי ב-21:00');
+  const [r] = (await h.state()).reminders;
+  assert.equal(r.rule?.freq, 'weekly', 'still weekly');
+  assert.match(new Date(r.next_at).toLocaleString('en-US', { timeZone: h.config.tz, hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit' }), /^Wed,? 21:00$/);
+});
+
+test('Delete: a task that is no longer needed', { skip }, async () => {
+  await say('בוט, תמחק את המשימה של המקרר, כבר לא צריך');
+  const s = await h.state();
+  assert.ok(!hasTask(s.entries, /מקרר/), `fridge task gone: ${names(s.entries)}`);
+  assert.ok(!hasTask(s.done, /מקרר/), 'deleted, not marked done');
+});
+
+test('Reopen: a task marked done by mistake', { skip }, async () => {
+  await say('בוט, טעות, עוד לא קבענו תור לטיפת חלב. תחזיר את המשימה', { as: 'מיכל' });
+  assert.ok(hasTask((await h.state()).entries, /טיפת חלב/), 'clinic task open again');
+});
+
+test('A brand-new kind of list with its own details', { skip }, async () => {
+  await say('בוט, תפתח רשימת מתנות ללידה: סלקל מסבתא, שמיכה מהדודה רותי ב-200 ש״ח');
+  const g = (await h.state()).entries.filter((e) => /מתנ/.test(e.list));
+  assert.ok(g.length >= 2, `gifts list: ${names(g)}`);
+  assert.ok(g.some((e) => /200/.test(JSON.stringify(e))), `price kept: ${JSON.stringify(g)}`);
+});
+
+test('/list shows every list without Claude', { skip }, async () => {
+  const r = await h.say('/list');
+  assert.equal(r.usage, null);
+  assert.match(r.reply, /📋 .*מתנ/);
 });

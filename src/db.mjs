@@ -1,8 +1,7 @@
 // Household data. Works on Cloudflare D1 and on node:sqlite through an adapter (src/adapters.mjs).
 
 const SCHEMA = [
-  `CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, list TEXT NOT NULL DEFAULT 'סופר', name TEXT NOT NULL, qty TEXT, note TEXT, added_by TEXT, created_at INTEGER NOT NULL, done_at INTEGER)`,
-  `CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT, places TEXT NOT NULL DEFAULT '', assignee TEXT, due_at INTEGER, due_has_time INTEGER NOT NULL DEFAULT 0, created_by TEXT, created_at INTEGER NOT NULL, done_at INTEGER, done_by TEXT)`,
+  `CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, list TEXT NOT NULL, text TEXT NOT NULL, fields TEXT NOT NULL DEFAULT '{}', created_by TEXT, created_at INTEGER NOT NULL, done_at INTEGER, done_by TEXT)`,
   `CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY, chat_id INTEGER NOT NULL, text TEXT NOT NULL, start_local TEXT NOT NULL, next_at INTEGER, rule TEXT, task_id INTEGER, created_by TEXT, created_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)`,
   `CREATE TABLE IF NOT EXISTS places (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT, lat REAL, lon REAL, radius_m INTEGER NOT NULL DEFAULT 250)`,
   `CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, topic TEXT NOT NULL, text TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
@@ -10,6 +9,12 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS place_alerts (user_id INTEGER, place_id INTEGER, day TEXT, PRIMARY KEY (user_id, place_id, day))`,
   `CREATE TABLE IF NOT EXISTS seen_updates (update_id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS entries_open ON entries(done_at, list)`,
+  // One-time move from the old items/tasks tables: only the open baby equipment list is kept, the rest is dropped.
+  // ponytail: delete these three lines once every deployed DB has run them.
+  `CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, list TEXT, name TEXT, created_at INTEGER, done_at INTEGER, added_by TEXT)`,
+  `INSERT INTO entries (list, text, created_by, created_at) SELECT list, name, added_by, created_at FROM items WHERE list = 'ציוד לתינוק' AND done_at IS NULL`,
+  `DROP TABLE items`, `DROP TABLE IF EXISTS tasks`,
   `CREATE INDEX IF NOT EXISTS reminders_next ON reminders(active, next_at)`,
   `CREATE INDEX IF NOT EXISTS history_chat ON history(chat_id, id)`,
 ];
@@ -20,9 +25,24 @@ const clean = (v, field, max = MAX_TEXT) => {
   return v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
 };
 const opt = (v, max = MAX_TEXT) => (v == null || v === '' ? null : clean(String(v), 'text', max));
-const normPlaces = (arr) =>
-  [...new Set((Array.isArray(arr) ? arr : String(arr ?? '').split(','))
-    .map((p) => String(p).trim()).filter(Boolean).map((p) => p.slice(0, 40)))].slice(0, 8).join(',');
+// Free fields of a list entry: short keys; values are text, numbers, true/false or a short list of texts. null/"" = no value.
+const DUE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/;
+function cleanFields(f) {
+  if (f == null) return {};
+  if (typeof f !== 'object' || Array.isArray(f)) throw new Error('fields צריך להיות אובייקט');
+  const out = {};
+  for (const [k, v] of Object.entries(f)) {
+    const key = clean(k, 'field', 30);
+    if (v == null || v === '') continue;
+    if (typeof v === 'number' || typeof v === 'boolean') out[key] = v;
+    else if (Array.isArray(v)) out[key] = [...new Set(v.map((x) => String(x).trim()).filter(Boolean).map((x) => x.slice(0, 60)))].slice(0, 10);
+    else out[key] = clean(typeof v === 'string' ? v : JSON.stringify(v), key, 300);
+    if (key === 'due' && !DUE.test(out[key])) throw new Error('due בפורמט YYYY-MM-DD או YYYY-MM-DDTHH:MM');
+  }
+  if (Object.keys(out).length > 15 || JSON.stringify(out).length > 2000) throw new Error('יותר מדי שדות');
+  return out;
+}
+const withFields = (r) => (r ? { ...r, fields: JSON.parse(r.fields || '{}') } : null);
 const withRule = (r) => (r ? { ...r, rule: r.rule ? JSON.parse(r.rule) : null } : null);
 
 export class HouseDB {
@@ -46,87 +66,76 @@ export class HouseDB {
     return r.changes > 0;
   }
 
-  // ---- shopping
-  async addItems(items, by, now = Date.now()) {
-    if (!Array.isArray(items) || !items.length) throw new Error('אין פריטים להוספה');
-    if (items.length > 50) throw new Error('יותר מדי פריטים בבת אחת');
+  // ---- lists: one generic table for every list (shopping, tasks, baby prep, chores, gifts...).
+  // `fields` is free JSON (qty, note, assignee, due, places, or anything else), so a new kind of list needs no new code.
+  async addEntries(entries, by, now = Date.now()) {
+    if (!Array.isArray(entries) || !entries.length) throw new Error('אין פריטים להוספה');
+    if (entries.length > 50) throw new Error('יותר מדי פריטים בבת אחת');
     const out = [];
-    for (const it of items) {
-      const list = opt(it.list, 40) ?? 'סופר';
-      const name = clean(it.name, 'name', 80);
-      const qty = opt(it.qty, 30);
-      const note = opt(it.note, 120);
-      const existing = await this.sql.get('SELECT id, qty FROM items WHERE done_at IS NULL AND list = ? AND name = ?', [list, name]);
-      if (existing) {
-        await this.sql.run('UPDATE items SET qty = ?, note = COALESCE(?, note) WHERE id = ?', [qty ?? existing.qty, note, existing.id]);
-        out.push({ id: existing.id, list, name, qty: qty ?? existing.qty, merged: true });
-      } else {
-        const r = await this.sql.run('INSERT INTO items (list, name, qty, note, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?)', [list, name, qty, note, by, now]);
-        out.push({ id: r.lastId, list, name, qty });
+    for (const e of entries) {
+      const list = clean(e.list, 'list', 40);
+      const text = clean(e.text, 'text', 200);
+      const fields = cleanFields(e.fields);
+      // The same open entry in the same list: merge the fields instead of adding a duplicate.
+      const old = await this.sql.get('SELECT * FROM entries WHERE done_at IS NULL AND list = ? AND text = ?', [list, text]);
+      if (old) {
+        out.push({ ...(await this.updateEntry(old.id, { fields: e.fields })), merged: true });
+        continue;
+      }
+      const { n } = await this.sql.get('SELECT COUNT(*) AS n FROM entries WHERE done_at IS NULL');
+      if (n >= 2000) throw new Error('יש כבר 2000 פריטים פתוחים. סגרו או מחקו ישנים.');
+      const r = await this.sql.run('INSERT INTO entries (list, text, fields, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
+        [list, text, JSON.stringify(fields), by, now]);
+      out.push(await this.entry(r.lastId));
+    }
+    return out;
+  }
+
+  async entry(id) { return withFields(await this.sql.get('SELECT * FROM entries WHERE id = ?', [Number(id)])); }
+
+  // Open entries (all lists, or one), and optionally the ones done since `doneSince`.
+  async entries({ list, doneSince } = {}) {
+    const where = [doneSince != null ? 'done_at >= ?' : 'done_at IS NULL'];
+    const args = doneSince != null ? [doneSince] : [];
+    if (list) { where.push('list = ?'); args.push(list); }
+    return (await this.sql.all(`SELECT * FROM entries WHERE ${where.join(' AND ')} ORDER BY list, id LIMIT 500`, args)).map(withFields);
+  }
+
+  lists() { return this.sql.all('SELECT list, COUNT(*) AS open FROM entries WHERE done_at IS NULL GROUP BY list ORDER BY list'); }
+
+  // fields are merged: a key with null or "" is removed. done: true closes, false reopens.
+  async updateEntry(id, { text, list, fields, done }, by, now = Date.now()) {
+    const e = await this.entry(id);
+    if (!e) throw new Error(`אין פריט ${id}`);
+    const merged = { ...e.fields };
+    for (const [k, v] of Object.entries(fields ?? {})) delete merged[k];
+    Object.assign(merged, cleanFields(fields));
+    const doneAt = done === true ? (e.done_at ?? now) : done === false ? null : e.done_at;
+    await this.sql.run('UPDATE entries SET list=?, text=?, fields=?, done_at=?, done_by=? WHERE id=?', [
+      list !== undefined ? clean(list, 'list', 40) : e.list, text !== undefined ? clean(text, 'text', 200) : e.text,
+      JSON.stringify(merged), doneAt, doneAt ? (done === true && !e.done_at ? by : e.done_by) : null, e.id,
+    ]);
+    if (doneAt) await this.sql.run('UPDATE reminders SET active = 0 WHERE task_id = ?', [e.id]); // its reminders stop
+    return this.entry(e.id);
+  }
+
+  async deleteEntries(ids) {
+    const out = [];
+    for (const id of ids.map(Number)) {
+      if ((await this.sql.run('DELETE FROM entries WHERE id = ?', [id])).changes > 0) {
+        out.push(id);
+        await this.sql.run('UPDATE reminders SET active = 0 WHERE task_id = ?', [id]);
       }
     }
     return out;
   }
 
-  openItems(list) {
-    return list
-      ? this.sql.all('SELECT id, list, name, qty, note, added_by FROM items WHERE done_at IS NULL AND list = ? ORDER BY list, id', [list])
-      : this.sql.all('SELECT id, list, name, qty, note, added_by FROM items WHERE done_at IS NULL ORDER BY list, id');
+  // A whole list: rename it, or delete it (only open entries, or with done ones too).
+  async renameList(from, to) {
+    return (await this.sql.run('UPDATE entries SET list = ? WHERE list = ?', [clean(to, 'list', 40), clean(from, 'list', 40)])).changes;
   }
 
-  async markItems(ids, now = Date.now()) {
-    const done = [];
-    for (const id of ids.map(Number)) {
-      if ((await this.sql.run('UPDATE items SET done_at = ? WHERE id = ? AND done_at IS NULL', [now, id])).changes > 0) done.push(id);
-    }
-    return done;
-  }
-
-  async clearList(list, now = Date.now()) {
-    return (await this.sql.run('UPDATE items SET done_at = ? WHERE done_at IS NULL AND list = ?', [now, clean(list, 'list', 40)])).changes;
-  }
-
-  // ---- tasks
-  async addTask({ title, notes, places, assignee, due_at, due_has_time }, by, now = Date.now()) {
-    const r = await this.sql.run(
-      'INSERT INTO tasks (title, notes, places, assignee, due_at, due_has_time, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [clean(title, 'title', 150), opt(notes, 400), normPlaces(places), opt(assignee, 40), due_at ?? null, due_has_time ? 1 : 0, by, now],
-    );
-    return this.task(r.lastId);
-  }
-
-  task(id) { return this.sql.get('SELECT * FROM tasks WHERE id = ?', [Number(id)]); }
-
-  async updateTask(id, fields) {
-    const t = await this.task(id);
-    if (!t) throw new Error(`אין משימה ${id}`);
-    const next = {
-      title: fields.title !== undefined ? clean(fields.title, 'title', 150) : t.title,
-      notes: fields.notes !== undefined ? opt(fields.notes, 400) : t.notes,
-      places: fields.places !== undefined ? normPlaces(fields.places) : t.places,
-      assignee: fields.assignee !== undefined ? opt(fields.assignee, 40) : t.assignee,
-      due_at: fields.due_at !== undefined ? fields.due_at : t.due_at,
-      due_has_time: fields.due_has_time !== undefined ? (fields.due_has_time ? 1 : 0) : t.due_has_time,
-    };
-    await this.sql.run('UPDATE tasks SET title=?, notes=?, places=?, assignee=?, due_at=?, due_has_time=? WHERE id=?',
-      [next.title, next.notes, next.places, next.assignee, next.due_at, next.due_has_time, Number(id)]);
-    return this.task(id);
-  }
-
-  async completeTasks(ids, by, now = Date.now()) {
-    const done = [];
-    for (const id of ids.map(Number)) {
-      if ((await this.sql.run('UPDATE tasks SET done_at = ?, done_by = ? WHERE id = ? AND done_at IS NULL', [now, by, id])).changes > 0) {
-        done.push(id);
-        await this.sql.run('UPDATE reminders SET active = 0 WHERE task_id = ?', [id]); // its reminders stop
-      }
-    }
-    return done;
-  }
-
-  openTasks() { return this.sql.all('SELECT * FROM tasks WHERE done_at IS NULL ORDER BY due_at IS NULL, due_at, id'); }
-
-  recentDone(sinceMs) { return this.sql.all('SELECT * FROM tasks WHERE done_at >= ? ORDER BY done_at DESC LIMIT 30', [sinceMs]); }
+  async deleteList(list) { return (await this.sql.run('DELETE FROM entries WHERE list = ?', [clean(list, 'list', 40)])).changes; }
 
   // ---- reminders
   async addReminder({ chat_id, text, start_local, next_at, rule, task_id }, by, now = Date.now()) {
@@ -153,6 +162,16 @@ export class HouseDB {
     else await this.sql.run('UPDATE reminders SET active = 0 WHERE id = ?', [id]);
   }
 
+  async updateReminder(id, { text, start_local, next_at, rule }) {
+    const r = await this.reminder(id);
+    if (!r?.active) throw new Error(`אין תזכורת פעילה ${id}`);
+    await this.sql.run('UPDATE reminders SET text=?, start_local=?, next_at=?, rule=? WHERE id=?', [
+      text !== undefined ? clean(text, 'text', 300) : r.text, start_local ?? r.start_local, next_at ?? r.next_at,
+      rule !== undefined ? (rule ? JSON.stringify(rule) : null) : (r.rule ? JSON.stringify(r.rule) : null), r.id,
+    ]);
+    return this.reminder(id);
+  }
+
   async cancelReminders(ids) {
     const out = [];
     for (const id of ids.map(Number)) {
@@ -162,10 +181,21 @@ export class HouseDB {
   }
 
   // ---- places
-  async savePlace({ name, kind, lat, lon, radius_m }) {
+  // With id: edit that place (also rename). Without: insert, or update the place with the same name.
+  async savePlace({ id, name, kind, lat, lon, radius_m }) {
     const n = clean(name, 'name', 60);
-    const r = Math.min(Math.max(Number(radius_m) || 250, 50), 3000);
     const hasGeo = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    if (id) {
+      const old = await this.sql.get('SELECT * FROM places WHERE id = ?', [Number(id)]);
+      if (!old) throw new Error(`אין מקום ${id}`);
+      if (await this.sql.get('SELECT id FROM places WHERE name = ? AND id != ?', [n, old.id])) throw new Error(`כבר יש מקום בשם ${n}`);
+      await this.sql.run('UPDATE places SET name=?, kind=?, lat=?, lon=?, radius_m=? WHERE id=?', [
+        n, kind !== undefined ? opt(kind, 40) : old.kind, hasGeo ? lat : old.lat, hasGeo ? lon : old.lon,
+        radius_m ? Math.min(Math.max(Number(radius_m), 50), 3000) : old.radius_m, old.id,
+      ]);
+      return this.sql.get('SELECT * FROM places WHERE id = ?', [old.id]);
+    }
+    const r = Math.min(Math.max(Number(radius_m) || 250, 50), 3000);
     await this.sql.run(`INSERT INTO places (name, kind, lat, lon, radius_m) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(name) DO UPDATE SET kind = COALESCE(excluded.kind, kind), lat = COALESCE(excluded.lat, lat),
       lon = COALESCE(excluded.lon, lon), radius_m = excluded.radius_m`,
@@ -174,6 +204,17 @@ export class HouseDB {
   }
 
   places() { return this.sql.all('SELECT * FROM places ORDER BY name'); }
+
+  async deletePlaces(ids) {
+    const out = [];
+    for (const id of ids.map(Number)) {
+      if ((await this.sql.run('DELETE FROM places WHERE id = ?', [id])).changes > 0) {
+        out.push(id);
+        await this.sql.run('DELETE FROM place_alerts WHERE place_id = ?', [id]);
+      }
+    }
+    return out;
+  }
 
   async markPlaceAlert(userId, placeId, day) {
     return (await this.sql.run('INSERT OR IGNORE INTO place_alerts (user_id, place_id, day) VALUES (?, ?, ?)', [userId, placeId, day])).changes > 0;

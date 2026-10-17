@@ -2,7 +2,7 @@
 // Runs the same on Cloudflare Workers (webhook + cron) and on Node (long polling).
 import { Claude } from './claude.mjs';
 import { contextBlock } from './prompt.mjs';
-import { HELP, formatShopping, formatTasks, formatReminders, formatDigest } from './format.mjs';
+import { HELP, formatLists, formatReminders, formatDigest } from './format.mjs';
 import { localDate, localParts, nextOccurrence, distanceM, formatHe } from './time.mjs';
 
 const LOCATION_TTL_MS = 30 * 60_000;
@@ -106,8 +106,7 @@ export class FamilyBot {
   async fixedCommand(text) {
     const { db, cfg } = this;
     if (this.isCommand(text, 'start') || this.isCommand(text, 'help') || /^(עזרה|help)$/u.test(this.stripTrigger(text))) return HELP;
-    if (this.isCommand(text, 'list')) return formatShopping(await db.openItems());
-    if (this.isCommand(text, 'tasks')) return formatTasks(await db.openTasks(), cfg.tz);
+    if (this.isCommand(text, 'list') || this.isCommand(text, 'tasks')) return formatLists(await db.entries(), cfg.tz);
     if (this.isCommand(text, 'reminders')) return formatReminders(await db.activeReminders(), cfg.tz);
     return null;
   }
@@ -133,7 +132,7 @@ export class FamilyBot {
     const day = localDate(new Date(now), cfg.tz);
     const usage = await db.get(`usage:${day}`, { calls: 0 });
     if (usage.calls >= cfg.maxDailyCalls) {
-      if (!silentIfDash) await this.tg.send(chatId, 'הגעתי למגבלת השימוש היומית. אפשר להשתמש ב-/list, /tasks ו-/reminders עד מחר.');
+      if (!silentIfDash) await this.tg.send(chatId, 'הגעתי למגבלת השימוש היומית. אפשר להשתמש ב-/list ו-/reminders עד מחר.');
       return;
     }
     await db.bumpUsage(day, { calls: 1 });
@@ -202,8 +201,8 @@ export class FamilyBot {
       // Move the reminder forward before the send, so a crash never sends it twice.
       const next = r.rule ? nextOccurrence(r.rule, r.start_local, now, cfg.tz) : null;
       await db.advanceReminder(r.id, next);
-      const task = r.task_id ? await db.task(r.task_id) : null;
-      if (task?.done_at) continue;
+      const entry = r.task_id ? await db.entry(r.task_id) : null;
+      if (entry?.done_at) continue;
       const late = now - r.next_at > 15 * 60_000 ? ` (באיחור, היה ל-${formatHe(r.next_at, cfg.tz)})` : '';
       try {
         await this.tg.send(r.chat_id, `⏰ תזכורת: ${r.text}${late}`);
@@ -217,7 +216,7 @@ export class FamilyBot {
       const day = localDate(new Date(now), cfg.tz);
       if (p.hh * 60 + p.mm >= h * 60 + m && (await db.get('digest:last')) !== day) {
         await db.set('digest:last', day);
-        const text = formatDigest({ tasks: await db.openTasks(), reminders: await db.activeReminders(), items: await db.openItems() }, cfg.tz, now);
+        const text = formatDigest({ entries: await db.entries(), reminders: await db.activeReminders() }, cfg.tz, now);
         if (text) await this.tg.send(cfg.mainChat, text).catch((e) => this.log.error?.('digest failed', e.message));
       }
     }

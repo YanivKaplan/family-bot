@@ -4,8 +4,7 @@ A private Telegram assistant for one family. It lives in your family group, spea
 
 What it does:
 
-- **Errands and tasks** – with a person, a due date, and the **places** where you can do them (קניון, דואר, בית מרקחת, אונליין...).
-- **Shopping lists** – one or more lists (סופר, פארם, ירקן...). "בוט, תוסיף חלב וביצים", "בוט, קניתי את החלב", `/list`.
+- **Any list** – shopping (סופר, פארם...), tasks, baby equipment, chores, gifts, or any new list you name. Each item can have any details: quantity, a person, a due date, the **places** where you can do it (קניון, דואר, אונליין...), a price, a size. Add, show, edit, move, close, reopen and delete, all in free Hebrew: "בוט, תוסיף חלב", "בוט, קניתי את החלב", "בוט, תעביר את החיתולים לפארם", "בוט, תמחק את העגלה". `/list` shows all lists.
 - **Reminders** – one-time or repeating, sent to the group: "בוט, תזכיר כל יום ראשון ב-7 לשים זבל למחזור".
 - **"We are at the mall"** – "בוט, אנחנו בקניון" gives the tasks and items for that place. With **live location** in the group, the bot sends one message when a family member arrives at a saved place (only if there is something to do there).
 - **Household memory** – "בוט, תזכור שתקציב האוכל שלנו הוא 3,000 ₪". The bot uses these facts in later discussions.
@@ -18,13 +17,13 @@ What it does:
 Family Telegram group ──webhook (secret header)──> Cloudflare Worker ──> Claude API (tools + web search)
                                                           │
                               cron, every minute ─────────┤
-                                                          └── Cloudflare D1 (SQLite): lists, tasks,
+                                                          └── Cloudflare D1 (SQLite): lists (one generic table),
                                                               reminders, places, memory
 ```
 
 - **Hosting: Cloudflare Workers, free plan.** No credit card. Telegram calls the bot, so nothing runs all the time. The cron trigger sends the reminders.
 - **No npm dependencies.** Only platform built-ins (`fetch`, D1). No supply-chain risk from packages.
-- `/list`, `/tasks`, `/reminders`, `/help` and the reminders do not call Claude, so they cost nothing.
+- `/list`, `/reminders`, `/help` and the reminders do not call Claude, so they cost nothing.
 - The same code also runs on Node 22 with long polling (`npm start`, or the `Dockerfile`), if you want to host it yourself later.
 
 ## Security
@@ -119,7 +118,7 @@ In the group, start with **בוט** (or **עוזר**), tag the bot, or reply to 
 בוט, תזכור שתקציב האוכל שלנו הוא 3,000 ₪ בחודש
 בוט, בוא נחשוב איך לחסוך 1,000 ₪ בחודש
 בוט, עד מתי הדואר בגבעתיים פתוח היום?
-/list   /tasks   /reminders   /help
+/list   /reminders   /help
 ```
 
 ## Settings
@@ -147,7 +146,10 @@ npm test     # unit tests, end-to-end tests, and Worker tests with fake Telegram
 npm start    # local run with long polling (needs .env, Node 22.13+)
 npm run chat       # talk to the bot locally, no Telegram (real Claude, needs ANTHROPIC_API_KEY in .env). :help for commands
 npm run test:live  # a scripted family week against the real Claude: checks saved data, answers and time per answer
+npm run deploy     # wrangler deploy, and records the deployed commit
 ```
+
+Working with Claude Code: `CLAUDE.md` says every change ends with test, commit, push and deploy, and a Stop hook (`.claude/settings.json` → `scripts/ship-check.sh`) does not let a request finish while something is uncommitted, unpushed or not deployed.
 
 `test/harness.mjs` runs the real bot with a fake Telegram and a controllable clock. Use it to try a prompt change: run `npm run test:live` (add `LIVE_VERBOSE=1` to see each request, DB call and answer), change `src/prompt.mjs`, run again.
 
@@ -157,7 +159,7 @@ npm run test:live  # a scripted family week against the real Claude: checks save
 | `src/index.mjs` | Node entry: long polling + 30-second scheduler |
 | `src/bot.mjs` | Access control, wake word, locations, reminders, morning summary |
 | `src/claude.mjs` | Claude Messages API: tool loop, web search, prompt caching |
-| `src/tools.mjs` | The tools that Claude can call |
+| `src/tools.mjs` | The tools that Claude can call: generic lists (`list_*`), reminders, places, memory |
 | `src/prompt.mjs` | The Hebrew system prompt |
 | `src/db.mjs` | Tables and data functions (async) |
 | `src/d1.mjs`, `src/node-sqlite.mjs` | SQL back ends: Cloudflare D1, node:sqlite |

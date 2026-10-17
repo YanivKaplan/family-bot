@@ -4,7 +4,7 @@
 import { mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { createHarness, USERS } from '../test/harness.mjs';
-import { formatShopping, formatTasks, formatReminders } from '../src/format.mjs';
+import { formatLists, formatReminders } from '../src/format.mjs';
 import { formatHe } from '../src/time.mjs';
 
 const dbPath = process.argv[2] ?? './data/local.db';
@@ -43,7 +43,7 @@ for (;;) {
     else if (cmd === ':tick') show(await h.tick());
     else if (cmd === ':state') {
       const s = await h.state();
-      console.log([formatShopping(s.items), formatTasks(s.tasks, h.config.tz), formatReminders(s.reminders, h.config.tz)].join('\n\n'));
+      console.log([formatLists(s.entries, h.config.tz, h.now()), formatReminders(s.reminders, h.config.tz)].join('\n\n'));
       for (const n of s.notes) console.log(`🧠 [${n.topic}] ${n.text}`);
     } else show(await h.say(line, { as, chat }));
   } catch (err) {

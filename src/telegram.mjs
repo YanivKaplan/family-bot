@@ -51,8 +51,7 @@ export class Telegram {
   setCommands() {
     return this.call('setMyCommands', {
       commands: [
-        { command: 'list', description: 'רשימת הקניות' },
-        { command: 'tasks', description: 'משימות פתוחות' },
+        { command: 'list', description: 'כל הרשימות' },
         { command: 'reminders', description: 'תזכורות פעילות' },
         { command: 'help', description: 'עזרה' },
         { command: 'id', description: 'מזהה הצ\'אט (להגדרה)' },
