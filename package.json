@@ -11,7 +11,7 @@
     "start": "node --disable-warning=ExperimentalWarning src/index.mjs",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.mjs",
     "chat": "node --disable-warning=ExperimentalWarning scripts/chat.mjs",
-    "deploy": "wrangler deploy && git rev-parse HEAD > .git/deployed-sha",
+    "deploy": "npx wrangler deploy && git rev-parse HEAD > .git/deployed-sha",
     "test:live": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/live.scenario.mjs"
   },
   "license": "MIT"
