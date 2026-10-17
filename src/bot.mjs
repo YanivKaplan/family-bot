@@ -54,13 +54,11 @@ export class FamilyBot {
     }
     if (msg.location) return this.onLocation(msg, isEdit);
     if (isEdit || !text) return;
-    const addressed = this.isTriggered(msg, text);
-    if (!addressed && (!this.cfg.answerAll || text.trim().startsWith('/'))) return this.rememberChat(msg, text); // not for the bot: no answer, kept only as context
+    if (!this.isTriggered(msg, text)) return this.rememberChat(msg, text); // not for the bot: no answer, kept only as context
 
     const fixed = await this.fixedCommand(text);
     if (fixed) return this.tg.send(msg.chat.id, fixed, { replyTo: msg.message_id });
-    // ANSWER_ALL: every group message goes to Claude. Without the wake word Claude may answer "-" (plain chatter), then stay silent.
-    return this.converse(msg, this.stripTrigger(text), addressed ? {} : { silentIfDash: true, unaddressed: text });
+    return this.converse(msg, this.stripTrigger(text));
   }
 
   async onMembership(m) {
@@ -128,7 +126,7 @@ export class FamilyBot {
   }
 
   // ---- free text -> Claude
-  async converse(msg, text, { systemNote = false, silentIfDash = false, unaddressed = null } = {}) {
+  async converse(msg, text, { systemNote = false, silentIfDash = false } = {}) {
     const { db, cfg } = this;
     const chatId = msg.chat.id;
     const now = Date.now();
@@ -150,7 +148,6 @@ export class FamilyBot {
       tz: cfg.tz, now, chatTitle: msg.chat.title, user, isGroup: msg.chat.type !== 'private', members: cfg.members,
       memoryTopics: await db.noteTopics(),
       recentChat: cfg.groupContext ? await this.recentChat(chatId, now) : [],
-      unaddressed: unaddressed != null,
     });
     await this.tg.typing(chatId);
     let reply;
@@ -161,10 +158,10 @@ export class FamilyBot {
       if (r.toolCalls.some((c) => !c.ok)) this.log.warn?.('tool errors', JSON.stringify(r.toolCalls.filter((c) => !c.ok)));
     } catch (err) {
       this.log.error?.('claude failed', err.message);
-      if (!silentIfDash || unaddressed != null) await this.tg.send(chatId, 'משהו השתבש אצלי. נסו שוב עוד רגע 🙏', { replyTo: msg.message_id });
+      if (!silentIfDash) await this.tg.send(chatId, 'משהו השתבש אצלי. נסו שוב עוד רגע 🙏', { replyTo: msg.message_id });
       return;
     }
-    if (silentIfDash && (!reply || reply.trim() === '-')) return unaddressed != null && this.rememberChat(msg, unaddressed);
+    if (silentIfDash && (!reply || reply.trim() === '-')) return;
     if (!reply) reply = '👍';
     await db.addHistory(chatId, 'user', userText, 24);
     await db.addHistory(chatId, 'assistant', reply, 24);

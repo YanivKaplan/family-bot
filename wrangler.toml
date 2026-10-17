@@ -26,7 +26,6 @@ CLAUDE_MODEL = "claude-sonnet-5-5"
 MAX_DAILY_CALLS = "300"
 MAX_TOKENS = "2048"
 WEB_SEARCH = "true"
-ANSWER_ALL = "true"
 GROUP_CONTEXT = "15"
 
 # Secrets (set them as encrypted secrets, never here):
