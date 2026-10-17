@@ -87,6 +87,7 @@ test('wake word -> Claude -> tool -> reply in the group', async () => {
   const first = claudeReqs[0];
   assert.equal(first.messages.at(-1).content, 'יניב: תוסיף 2 חלב וביצים', 'wake word removed, sender added');
   assert.match(first.system[1].text, /הזמן עכשיו/);
+  assert.match(first.system[1].text, /יניב: מישהו ראה את המפתחות\?/, 'earlier group chatter is context');
   assert.ok(first.system[0].cache_control, 'system prompt is cached');
   assert.equal((await db.openItems()).length, 2);
   const s = sends().at(-1);

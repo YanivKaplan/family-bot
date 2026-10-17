@@ -26,6 +26,7 @@ export function loadConfig(env) {
     wakeWords: list(env.WAKE_WORDS ?? 'בוט,עוזר,bot'),
     members: list(env.FAMILY_MEMBERS),
     digestTime: digestTime || null,
+    groupContext: Number(env.GROUP_CONTEXT ?? 15),
     maxDailyCalls: Number(env.MAX_DAILY_CALLS ?? 300),
     maxTokens: Number(env.MAX_TOKENS ?? 2048),
     webSearch: String(env.WEB_SEARCH ?? 'true').toLowerCase() === 'true',

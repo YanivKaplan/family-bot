@@ -43,7 +43,7 @@ Only your family can use the bot:
 | Replies are plain text (no Markdown/HTML). | Links or formatting injected through text |
 
 Privacy notes:
-- In the group, the bot receives all messages (this is necessary for the wake word "בוט" and for live location). The code drops every message that is not for the bot: it does not save it and does not send it to Claude.
+- In the group, the bot receives all messages (this is necessary for the wake word "בוט" and for live location). It does not answer messages that are not for it. The last `GROUP_CONTEXT` (15) of them from the last 2 hours are kept, so the bot understands "בוט, תוסיף את זה". They go to Claude only together with a message for the bot. `GROUP_CONTEXT=0` turns this off: then the bot drops these messages.
 - The last 24 lines of each bot conversation are kept for 12 hours, for context.
 - The last shared location of a chat is kept for 30 minutes. Coordinates are saved only when you ask to save a place.
 - Messages for the bot go to the Anthropic API. By default, Anthropic does not use API data to train models.
@@ -132,6 +132,7 @@ Plain settings are in `wrangler.toml` under `[vars]` (or the dashboard). Secrets
 | `DIGEST_TIME` | Time of the morning summary; empty = off | `07:30` |
 | `CLAUDE_MODEL` | `claude-haiku-5-5` is cheaper; `claude-opus-5-5` is stronger | `claude-sonnet-5-5` |
 | `MAX_DAILY_CALLS` | Model calls per day | `300` |
+| `GROUP_CONTEXT` | Recent group messages (not for the bot, last 2 hours) given as context; 0 = off | `15` |
 | `WEB_SEARCH` | Web search for current facts ($10 per 1,000 searches) | `true` |
 
 ## Limits of the free plan
@@ -144,7 +145,11 @@ Plain settings are in `wrangler.toml` under `[vars]` (or the dashboard). Secrets
 ```bash
 npm test     # unit tests, end-to-end tests, and Worker tests with fake Telegram, Claude and D1
 npm start    # local run with long polling (needs .env, Node 22.13+)
+npm run chat       # talk to the bot locally, no Telegram (real Claude, needs ANTHROPIC_API_KEY in .env). :help for commands
+npm run test:live  # a scripted family week against the real Claude: checks saved data, answers and time per answer
 ```
+
+`test/harness.mjs` runs the real bot with a fake Telegram and a controllable clock. Use it to try a prompt change: run `npm run test:live` (add `LIVE_VERBOSE=1` to see each request, DB call and answer), change `src/prompt.mjs`, run again.
 
 | File | Contents |
 | --- | --- |

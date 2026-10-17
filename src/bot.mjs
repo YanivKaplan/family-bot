@@ -6,6 +6,7 @@ import { HELP, formatShopping, formatTasks, formatReminders, formatDigest } from
 import { localDate, localParts, nextOccurrence, distanceM, formatHe } from './time.mjs';
 
 const LOCATION_TTL_MS = 30 * 60_000;
+const CHAT_TTL_MS = 2 * 3600_000;
 
 export class FamilyBot {
   constructor({ config, db, telegram, claude, log = console }) {
@@ -46,12 +47,14 @@ export class FamilyBot {
       return this.tg.send(msg.chat.id, `chat id: ${msg.chat.id}\nuser id: ${msg.from?.id}`, { replyTo: msg.message_id });
     }
     if (!this.isAllowed(msg.chat, msg.from)) {
+      // Ids only (no message text), so the log shows why a message was ignored.
+      this.log.warn?.(`ignored: chat ${msg.chat.id} (${msg.chat.type}), user ${msg.from?.id}`);
       if (msg.chat.type === 'private' && !isEdit) await this.tg.send(msg.chat.id, 'זה בוט פרטי של משפחה.');
       return;
     }
     if (msg.location) return this.onLocation(msg, isEdit);
     if (isEdit || !text) return;
-    if (!this.isTriggered(msg, text)) return; // not for the bot: do not store, do not send to Claude
+    if (!this.isTriggered(msg, text)) return this.rememberChat(msg, text); // not for the bot: no answer, kept only as context
 
     const fixed = await this.fixedCommand(text);
     if (fixed) return this.tg.send(msg.chat.id, fixed, { replyTo: msg.message_id });
@@ -64,6 +67,7 @@ export class FamilyBot {
     if (this.cfg.allowedChats.has(m.chat.id) && this.cfg.allowedUsers.has(m.from?.id)) {
       return this.tg.send(m.chat.id, 'שלום משפחה! 🏠 אני עוזר הבית. כתבו "בוט, עזרה" כדי לראות מה אני יודע לעשות.');
     }
+    this.log.warn?.(`added to chat ${m.chat.id} (${m.chat.type}) by user ${m.from?.id}`);
     if (this.cfg.allowedChats.size === 0) {
       // Setup mode: stay, so /id works. Nothing else works until ALLOWED_CHAT_IDS is set.
       return this.tg.send(m.chat.id, `מצב הגדרה. מזהה הקבוצה: ${m.chat.id}`);
@@ -108,6 +112,19 @@ export class FamilyBot {
     return null;
   }
 
+  // Recent group chatter (GROUP_CONTEXT messages, 2 hours). It goes to Claude only with the next message for the bot,
+  // so "בוט, תוסיף את זה" understands what "this" is. Only allowed family members get here.
+  async recentChat(chatId, now = Date.now()) {
+    return (await this.db.get(`chat:${chatId}`, [])).filter((m) => now - m.ts < CHAT_TTL_MS);
+  }
+
+  async rememberChat(msg, text) {
+    if (msg.chat.type === 'private' || !this.cfg.groupContext) return;
+    const recent = await this.recentChat(msg.chat.id);
+    recent.push({ who: msg.from?.first_name ?? 'מישהו', text: text.slice(0, 300), ts: Date.now() });
+    await this.db.set(`chat:${msg.chat.id}`, recent.slice(-this.cfg.groupContext));
+  }
+
   // ---- free text -> Claude
   async converse(msg, text, { systemNote = false, silentIfDash = false } = {}) {
     const { db, cfg } = this;
@@ -130,6 +147,7 @@ export class FamilyBot {
     const contextText = contextBlock({
       tz: cfg.tz, now, chatTitle: msg.chat.title, user, isGroup: msg.chat.type !== 'private', members: cfg.members,
       memoryTopics: await db.noteTopics(),
+      recentChat: cfg.groupContext ? await this.recentChat(chatId, now) : [],
     });
     await this.tg.typing(chatId);
     let reply;
