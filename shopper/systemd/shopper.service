@@ -8,6 +8,8 @@ WorkingDirectory=%h/agents/family-bot
 ExecStart=/usr/bin/node shopper/main.mjs
 Restart=always
 RestartSec=30
+StandardOutput=append:%h/.local/share/family-shopper/shopper.log
+StandardError=append:%h/.local/share/family-shopper/shopper.log
 
 [Install]
 WantedBy=default.target
