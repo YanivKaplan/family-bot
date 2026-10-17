@@ -1,5 +1,5 @@
 // Online grocery orders. The bot queues a list the family confirmed; the shopper on the home machine
-// (shopper/main.mjs) takes it, fills the cart on the store's site, stops before payment and reports back.
+// (shopper/ beside this project) takes it, fills the cart on the store's site, stops before payment and reports back.
 // One order at a time, kept in kv (no new table).
 const KEY = 'order:job';
 const STALE_MS = 3 * 3600_000; // an order that never reported back stops blocking new ones

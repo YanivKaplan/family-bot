@@ -37,7 +37,7 @@ Only your family can use the bot:
 | The bot leaves any other group. After setup, `/setjoingroups` → Disable in @BotFather. | Use of the bot in other groups |
 | The token, the API key, the secret and the ids are Cloudflare **encrypted secrets**, not in the code. | Secrets in GitHub |
 | Each update is handled once (`seen_updates` table). | Double actions when Telegram retries |
-| Claude can only change household data. It cannot buy, pay, send email or open apps. The prompt forbids saving card numbers, bank accounts, passwords and ID numbers in memory. | Damage from a wrong or manipulated answer |
+| Claude can only change household data. It cannot pay, send email or open apps. The one outside action is filling the Carrefour cart for a list the family confirmed (`order_start`): the shopper on the home machine (`../shopper`) stops before payment and never types card details. The prompt forbids saving card numbers, bank accounts, passwords and ID numbers in memory. | Damage from a wrong or manipulated answer |
 | `MAX_DAILY_CALLS` (300), max 8 model steps per message, max 3 web searches per message, and a spend limit on the Anthropic workspace. | Unexpected cost |
 | Replies are plain text (no Markdown/HTML). | Links or formatting injected through text |
 
@@ -67,7 +67,7 @@ Make a random string of 48 characters with only letters, digits, `_` and `-`, fo
 ### 4. Deploy to Cloudflare
 **Option A – the button (no computer needed):**
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YanivKaplan/family-bot)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/YanivKaplan/family-bot/tree/main/family-bot)
 
 1. Open the button link and log in to Cloudflare (a free account, no card).
 2. Cloudflare copies the repository to your GitHub, creates the D1 database, and asks for the secrets. Enter `TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY` and `WEBHOOK_SECRET`. Leave `ALLOWED_CHAT_IDS`, `ALLOWED_USER_IDS` and `FAMILY_MEMBERS` empty for now.
@@ -75,6 +75,7 @@ Make a random string of 48 characters with only letters, digits, `_` and `-`, fo
 
 **Option B – from a computer:**
 ```bash
+cd family-bot
 npx wrangler login
 npx wrangler deploy                       # creates the D1 database and the Worker
 npx wrangler secret put TELEGRAM_BOT_TOKEN

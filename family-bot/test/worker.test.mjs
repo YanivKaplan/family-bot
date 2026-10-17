@@ -7,6 +7,7 @@ import worker from '../src/worker.mjs';
 import { HouseDB } from '../src/db.mjs';
 import { D1Adapter } from '../src/d1.mjs';
 import { runTool } from '../src/tools.mjs';
+import { formatReport } from '../src/order.mjs';
 
 // Minimal D1 binding: prepare().bind().run/first/all, batch.
 function fakeD1() {
@@ -143,4 +144,12 @@ test('the shopper borrows the bot\'s Claude key, with its own daily count', asyn
   assert.equal(res.status, 200);
   assert.equal((await res.json()).content[0].text, 'שלום!');
   assert.equal(claudeCalls, before + 1);
+});
+
+test('an order under the store minimum: the group gets the cart link and how much to add', () => {
+  const text = formatReport({ store: 'carrefour' }, {
+    status: 'done', below_minimum: '₪192.00', total: '₪43.90', checkout_url: 'https://www.carrefour.co.il/cart/summary',
+    added: [{ item: 'לחם', product: 'לחם אחיד', qty: 1 }], missing: [],
+  });
+  assert.match(text, /מתחת למינימום[^\n]*₪192\.00[\s\S]*לסל \(מחוברים/);
 });

@@ -1,8 +1,7 @@
 // The cart-filling loop with a fake browser and a scripted Claude: guards, human hand-off, and the final report.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { shop, skillText } from '../shopper/agent.mjs';
-import { formatReport } from '../src/order.mjs';
+import { shop, skillText } from '../agent.mjs';
 
 function fakeBrowser(elements, { title = 'קרפור' } = {}) {
   const b = {
@@ -89,6 +88,4 @@ test('a cart under the site minimum is still handed over, with the cart link and
   assert.equal(r.status, 'done');
   assert.equal(r.below_minimum, '₪192.00');
   assert.equal(r.checkout_url, 'https://www.carrefour.co.il/cart/summary');
-  const text = formatReport({ store: 'carrefour' }, r);
-  assert.match(text, /מתחת למינימום[^\n]*₪192\.00[\s\S]*לסל \(מחוברים/);
 });

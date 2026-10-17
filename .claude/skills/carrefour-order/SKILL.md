@@ -54,7 +54,7 @@ earliest one. On the payment page, call `finish` with `reached_checkout: true` a
 
 ## Maintenance
 (Not sent to the shopper. For Claude Code sessions working on this flow.)
-- Flow: the bot's `order_start` tool (src/tools.mjs, src/order.mjs) queues the confirmed list in kv `order:job`.
+- Flow: the bot's `order_start` tool (family-bot/src/tools.mjs, family-bot/src/order.mjs) queues the confirmed list in kv `order:job`.
   `shopper/main.mjs` on agent-box polls `POST /shopper/next` on the Worker, runs `shopper/agent.mjs`
   (Claude through `POST /shopper/claude`, the browser through CDP on port 9222), and posts `/shopper/report`;
   the Worker writes the result to the Telegram chat.
