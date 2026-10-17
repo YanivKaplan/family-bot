@@ -8,15 +8,34 @@ export class Browser {
     // One tab only, so a person who opens the remote view sees the same page as the shopper.
     for (const extra of pages.slice(1)) await fetch(`http://127.0.0.1:${port}/json/close/${extra.id}`);
     const page = pages[0] ?? await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' })).json();
-    const b = new Browser(page.webSocketDebuggerUrl);
+    const b = new Browser(page, port);
     await b.ready;
     await b.send('Page.enable');
     return b;
   }
 
-  constructor(wsUrl) {
+  // A tab that stopped answering (it happens on Cloudflare's check page): open a new tab with the same URL, close the old one.
+  async recover(url) {
+    this.close();
+    const old = this.target;
+    const page = await (await fetch(`http://127.0.0.1:${this.port}/json/new?${url ?? old.url}`, { method: 'PUT' })).json();
+    await fetch(`http://127.0.0.1:${this.port}/json/close/${old.id}`).catch(() => {});
+    this.open(page);
+    await this.ready;
+    await this.send('Page.enable');
+    await this.settle(3000);
+  }
+
+  constructor(target, port) {
+    this.port = port;
     this.id = 0;
     this.pending = new Map();
+    this.open(target);
+  }
+
+  open(target) {
+    this.target = target;
+    const wsUrl = target.webSocketDebuggerUrl;
     this.ws = new WebSocket(wsUrl);
     this.ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
@@ -34,7 +53,7 @@ export class Browser {
       const id = ++this.id;
       this.pending.set(id, { resolve, reject, method });
       this.ws.send(JSON.stringify({ id, method, params }));
-      setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`${method}: timeout`)); }, 60_000);
+      setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`${method}: timeout`)); }, 25_000);
     });
   }
 

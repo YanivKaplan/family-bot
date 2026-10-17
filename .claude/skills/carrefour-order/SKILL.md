@@ -18,11 +18,13 @@ the latest page. Elements marked `(below)` are further down; you can still click
 - Stay on carrefour.co.il.
 - A "Verify you are human" check, a login form, or an SMS code: call `need_human` with one short Hebrew sentence
   (for example "צריך להתחבר לחשבון קרפור של המשפחה"). Never solve these yourself. After it returns, look at the page again.
-- If the cart already has products before you start, leave them, and say so in `finish.note`.
+- First look at the cart ("N מוצרים בעגלה" and its lines). An order can be a retry: a product from this list that is
+  already in the cart counts as added (call `item_result`; fix the qty with +/- if needed), do not add it again.
+  Leave other products in the cart, and say so in `finish.note`.
 
 ## The site (learned from real runs)
-- Search: open `https://www.carrefour.co.il/search/<item, URL-encoded>` directly (faster than the search box).
-  The results are product cards: name, brand | size, price. Each card has a button "הוספה לסל <product name>".
+- Search: type the item in the search box ("חיפוש קרפור") with enter=true. Do not open search URLs with `navigate`:
+  full page loads in a row make Cloudflare check the browser again, and then a person must help. The results are product cards: name, brand | size, price. Each card has a button "הוספה לסל <product name>".
 - After a product is in the cart, its card shows "הגדל בכמות ב-1" (+1) and "הקטן בכמות ב-1" (-1) instead.
 - The cart panel on the side shows "N מוצרים בעגלה", one line per product ("מחק <product>" removes it),
   and "המשך לתשלום ₪<total>" / "לתשלום", which go on to checkout. Never press "מחק עגלת קניות".

@@ -18,7 +18,7 @@ export function skillText() {
 }
 
 const TOOLS = [
-  { name: 'navigate', description: 'Open a URL on carrefour.co.il.', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
+  { name: 'navigate', description: 'Open a URL on carrefour.co.il. A full page load: use it rarely (Cloudflare checks fast page loads); search with the search box.', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'click', description: 'Click element [i] from the latest snapshot.', input_schema: { type: 'object', properties: { i: { type: 'integer' } }, required: ['i'] } },
   {
     name: 'type', description: 'Replace the text in input [i]; enter=true presses Enter after.',
@@ -75,6 +75,13 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
     return 'Nobody acted for 20 minutes.';
   };
 
+  // The tab stopped answering: a fresh tab, and a person if Cloudflare is checking again.
+  const recover = async () => {
+    await browser.recover('https://www.carrefour.co.il/');
+    if (CHALLENGE.test(await browser.title())) await askHuman('קרפור מבקש שוב לאשר שאתם לא רובוט. סמנו את התיבה בדף.');
+    return `The tab was stuck and was replaced; you are on the home page.\n\n${await browser.snapshot()}`;
+  };
+
   await browser.navigate('https://www.carrefour.co.il/');
   if (CHALLENGE.test(await browser.title())) await askHuman('קרפור מבקש לאשר שאתם לא רובוט. סמנו את התיבה בדף.');
 
@@ -106,6 +113,7 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
         text = await act(u.name, u.input ?? {});
       } catch (err) {
         text = `ERROR: ${err.message}`;
+        if (/timeout/.test(err.message)) text += `\n${await recover()}`;
       }
       if (final) text = 'ok';
       log.info?.(`step ${step} ${u.name} ${JSON.stringify(u.input).slice(0, 120)} -> ${text.split('\n')[0].slice(0, 100)}`);
