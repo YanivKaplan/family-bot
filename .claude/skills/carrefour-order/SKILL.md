@@ -28,6 +28,11 @@ the latest page. Elements marked `(below)` are further down; you can still click
   and "המשך לתשלום ₪<total>" / "לתשלום", which go on to checkout. Never press "מחק עגלת קניות".
 - "כניסה" in the header means nobody is logged in: before checkout, call `need_human` to log in.
 - Delivery fee shows in the cart ("דמי משלוח"); the delivery slot is chosen at checkout.
+- Checkout: the cart panel's "המשך לתשלום" opens /cart/summary; there "לסיום קנייה" goes on to checkout.
+- Delivery has a minimum order (₪200 without the delivery fee, for Raanana). Below it, "לסיום קנייה" opens a popup
+  "ההזמנה שלכם ... טרם הגיעה למינימום ... אנא הוסיפו לסל מוצרים בשווי ₪X". Do not add products the family did not ask
+  for: close the popup ("אישור") and call `finish` with `reached_checkout: false`, `below_minimum: "₪X"` and the total.
+- Popups show at the top of the page under OPEN POPUP. If a click seems to do nothing, read the popup.
 
 ## For each item
 1. Search for the Hebrew item name (drop words like "חבילה").

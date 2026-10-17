@@ -54,10 +54,12 @@ export function formatReport(job, r) {
     r.status === 'failed'
       ? `🛒 ${store}: לא הצלחתי להגיע לתשלום. ${s(r.text, 300)}`
       : `🛒 הסל ב${store} מוכן (${added.length} מוצרים)${r.total ? `, סה"כ ${s(r.total, 30)}` : ''}.`,
+    r.below_minimum ? `⚠️ ההזמנה מתחת למינימום של האתר. צריך להוסיף עוד ${s(r.below_minimum, 30)} כדי לסיים את הקנייה.` : '',
+    r.note && r.status === 'done' ? s(r.note, 300) : '',
     added.length ? `נוסף:\n${added.join('\n')}` : '',
     missing.length ? `לא נמצא / לא נוסף:\n${missing.join('\n')}` : '',
     r.status === 'failed' && added.length ? 'מה שנוסף נשאר בסל באתר.' : '',
-    r.checkout_url ? `לתשלום (מחוברים לחשבון המשפחה באתר): ${s(r.checkout_url, 400)}` : '',
+    r.checkout_url ? `${r.below_minimum ? 'לסל' : 'לתשלום'} (מחוברים לחשבון המשפחה באתר): ${s(r.checkout_url, 400)}` : '',
     r.status === 'done' ? 'לא שילמתי – התשלום אצלכם.' : '',
   ].filter(Boolean).join('\n\n');
 }

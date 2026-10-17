@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { shop, skillText } from '../shopper/agent.mjs';
+import { formatReport } from '../src/order.mjs';
 
 function fakeBrowser(elements, { title = 'קרפור' } = {}) {
   const b = {
@@ -57,7 +58,7 @@ test('fills the cart, is stopped at the pay button and at card fields, and repor
   assert.match(results(3)[1], /^BLOCKED/);
   assert.match(results(3)[2], /^BLOCKED/);
   assert.deepEqual(r, {
-    status: 'done', total: '₪11.80', checkout_url: 'https://www.carrefour.co.il/checkout',
+    status: 'done', total: '₪11.80', checkout_url: 'https://www.carrefour.co.il/checkout', below_minimum: undefined, note: undefined,
     added: [{ item: 'חלב', product: 'חלב 3%', qty: 2 }], missing: [{ item: 'ביצים', reason: 'אזל מהמלאי' }],
   });
   assert.deepEqual(reports, [r]);
@@ -76,4 +77,18 @@ test('a Cloudflare check goes to the family first; without reaching checkout the
   assert.equal(reports[0].view_url, 'http://v');
   assert.equal(r.status, 'failed');
   assert.deepEqual(r.missing, [{ item: 'לחם', reason: 'לא הגעתי אליו' }]);
+});
+
+test('a cart under the site minimum is still handed over, with the cart link and how much to add', async () => {
+  const browser = fakeBrowser([{ text: 'הוספה לסל לחם' }]);
+  const claude = scripted([
+    [['click', { i: 0 }], ['item_result', { item_id: 1, status: 'added', product: 'לחם אחיד', qty: 1 }]],
+    [['finish', { reached_checkout: false, below_minimum: '₪192.00', total: '₪43.90' }]],
+  ]);
+  const r = await shop({ id: 3, items: [{ id: 1, text: 'לחם' }] }, { browser, claude, report: async () => {}, log: {} });
+  assert.equal(r.status, 'done');
+  assert.equal(r.below_minimum, '₪192.00');
+  assert.equal(r.checkout_url, 'https://www.carrefour.co.il/cart/summary');
+  const text = formatReport({ store: 'carrefour' }, r);
+  assert.match(text, /מתחת למינימום[^\n]*₪192\.00[\s\S]*לסל \(מחוברים/);
 });

@@ -89,7 +89,12 @@ export class Browser {
       }
       const main = document.querySelector('main, [role=main], #main_content') ?? document.body;
       const text = main.innerText.replace(/\\n{2,}/g, '\\n').slice(0, ${maxText});
-      return 'URL: ' + location.href + '\\nTITLE: ' + document.title + '\\n\\nELEMENTS:\\n' + out.join('\\n') + '\\n\\nPAGE TEXT:\\n' + text;
+      // Open popups (minimum order, errors) are outside the main content: show them first.
+      const dialogs = [...new Set([...document.querySelectorAll('[role=dialog], dialog, .modal, [class*=dialog], [class*=popup]')]
+        .filter((d) => d.getBoundingClientRect().width > 2 && d.innerText.trim() && d.innerText.length < 1500)
+        .map((d) => d.innerText.replace(/\\s+/g, ' ').trim()))];
+      return 'URL: ' + location.href + '\\nTITLE: ' + document.title +
+        (dialogs.length ? '\\n\\nOPEN POPUP:\\n' + dialogs.slice(0, 3).join('\\n') : '') + '\\n\\nELEMENTS:\\n' + out.join('\\n') + '\\n\\nPAGE TEXT:\\n' + text;
     })()`);
   }
 

@@ -10,6 +10,7 @@ const CARD = /cc-|card|cvv|cvc|credit|אשראי|תוקף/i;
 const CHALLENGE = /just a moment|רק רגע|attention required/i;
 const ALLOWED_HOST = /(^|\.)carrefour\.co\.il$/;
 const HUMAN_WAIT_MS = 20 * 60_000;
+const CART_URL = 'https://www.carrefour.co.il/cart/summary';
 
 export function skillText() {
   const md = readFileSync(SKILL, 'utf8').replace(/^---[\s\S]*?---\s*/, '');
@@ -42,7 +43,15 @@ const TOOLS = [
   },
   {
     name: 'finish', description: 'Stop. Call when the checkout/payment page is open (or when you cannot go on).',
-    input_schema: { type: 'object', properties: { reached_checkout: { type: 'boolean' }, total: { type: 'string' }, note: { type: 'string' } }, required: ['reached_checkout'] },
+    input_schema: {
+      type: 'object',
+      properties: {
+        reached_checkout: { type: 'boolean' }, total: { type: 'string' },
+        below_minimum: { type: 'string', description: 'the site needs a bigger order first: how much to add, e.g. "₪163.06"' },
+        note: { type: 'string', description: 'Hebrew, for the family' },
+      },
+      required: ['reached_checkout'],
+    },
   },
 ];
 
@@ -153,9 +162,12 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
     else missing.push({ item: it.text, reason: r?.reason ?? 'לא הגעתי אליו' });
   }
   for (const [id] of results) if (!byId.has(id)) log.warn?.(`result for unknown item ${id}`);
-  const done = final?.reached_checkout && added.length > 0;
+  const done = (final?.reached_checkout || final?.below_minimum) && added.length > 0;
   const r = done
-    ? { status: 'done', added, missing, total: final.total, checkout_url: await browser.url() }
+    ? {
+      status: 'done', added, missing, total: final.total, below_minimum: final.below_minimum, note: final.note,
+      checkout_url: final.reached_checkout ? await browser.url() : CART_URL,
+    }
     : { status: 'failed', text: final?.note ?? 'נגמרו לי הצעדים לפני שהגעתי לתשלום.', added, missing };
   await report(r);
   return r;
