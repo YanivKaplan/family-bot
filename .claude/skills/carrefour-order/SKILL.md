@@ -58,8 +58,8 @@ earliest one. On the payment page, call `finish` with `reached_checkout: true` a
   `shopper/main.mjs` on agent-box polls `POST /shopper/next` on the Worker, runs `shopper/agent.mjs`
   (Claude through `POST /shopper/claude`, the browser through CDP on port 9222), and posts `/shopper/report`;
   the Worker writes the result to the Telegram chat.
-- Services (systemd --user on agent-box): `shopper-xvfb`, `shopper-chrome`, `shopper`. Logs: `tail -f ~/.local/share/family-shopper/shopper.log`.
-- See the browser: x11vnc + noVNC on the Tailscale IP, `http://100.71.148.71:6080/vnc.html` (the person logs in and passes
-  Cloudflare there). Screenshot without it: `node shopper/shot.mjs /tmp/x.png`.
+- Services (systemd --user on agent-box, units in shopper/systemd): `shopper-xvfb`, `shopper-chrome`, `shopper`,
+  and the remote view `shopper-vnc` (127.0.0.1:5900) + `shopper-view` (noVNC on the Tailscale IP, port 6080). Logs: `tail -f ~/.local/share/family-shopper/shopper.log`.
+- See the browser: `http://100.71.148.71:6080/vnc.html` (the person logs in and passes Cloudflare there). Screenshot without it: `node shopper/shot.mjs /tmp/x.png`.
 - Test one order without Telegram: `node shopper/try.mjs "חלב 3%" "ביצים L ×12"`.
 - Site notes learned from real runs go in the sections above, so the next order is faster.

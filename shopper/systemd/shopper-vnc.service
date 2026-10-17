@@ -1,0 +1,12 @@
+[Unit]
+Description=VNC of the shopper's screen (127.0.0.1:5900 only, password in ~/.vnc/passwd)
+Requires=shopper-xvfb.service
+After=shopper-xvfb.service
+
+[Service]
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -rfbport 5900 -rfbauth %h/.vnc/passwd -forever -shared -quiet
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

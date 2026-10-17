@@ -1,0 +1,13 @@
+[Unit]
+Description=Remote view of the shopper's browser in a web page (noVNC), on the Tailscale address only
+Requires=shopper-vnc.service
+After=shopper-vnc.service
+
+[Service]
+# The Tailscale IP is read at start; until Tailscale is up this fails and retries.
+ExecStart=/bin/sh -c 'ip=$(tailscale ip -4) && exec /usr/bin/websockify --web /usr/share/novnc "$ip:6080" 127.0.0.1:5900'
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
