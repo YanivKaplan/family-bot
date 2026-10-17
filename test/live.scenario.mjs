@@ -164,8 +164,18 @@ test('Saturday: understands the group chat before the call', { skip }, async () 
   assert.ok(hasItem(s, /רפיד/, /פארם|מרקחת/), `pads: ${names(s.items)}`);
 });
 
-test('Not for the bot: no wake word in the group', { skip }, async () => {
-  const r = await h.say('מישהו ראה את המפתחות?');
-  assert.equal(r.reply, '', 'no answer');
-  assert.equal(r.usage, null, 'no Claude call');
+test('No wake word: a request in the group is still done', { skip }, async () => {
+  await say('תוסיף מילקי לרשימת קניות');
+  assert.ok(hasItem(await h.state(), /מילקי/), 'milky added');
+});
+
+test('No wake word: a question in the group is answered', { skip }, async () => {
+  const r = await say('מה צריך לקנות בסופר?');
+  assert.match(r.reply, /חיתול|מילקי/);
+});
+
+test('No wake word: plain family chatter gets no answer', { skip }, async () => {
+  const r = await h.say('אוקיי, תודה, אני כבר בבית', { as: 'מיכל' });
+  timings.push({ text: 'chatter (silent)', ms: r.ms, in: r.usage?.input, out: r.usage?.output });
+  assert.equal(r.reply, '', `silent, got: ${r.reply}`);
 });

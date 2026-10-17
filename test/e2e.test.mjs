@@ -65,10 +65,12 @@ const groupMsg = (text, from = DAD, extra = {}) => ({
 const sends = () => tgCalls.filter((c) => c.method === 'sendMessage');
 const reset = () => { tgCalls.length = 0; claudeReqs.length = 0; };
 
-test('ignores group chatter that is not for the bot', async () => {
+test('group chatter goes to Claude; "-" means stay silent, and it is kept as context', async () => {
   reset();
+  script = () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: '-' }] });
   await bot.handle(groupMsg('מישהו ראה את המפתחות?'));
-  assert.equal(claudeReqs.length, 0);
+  assert.equal(claudeReqs.length, 1);
+  assert.match(claudeReqs[0].system[1].text, /בלי לפנות אליך/, 'Claude knows it was not called by name');
   assert.equal(sends().length, 0);
 });
 

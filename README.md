@@ -43,7 +43,7 @@ Only your family can use the bot:
 | Replies are plain text (no Markdown/HTML). | Links or formatting injected through text |
 
 Privacy notes:
-- In the group, the bot receives all messages (this is necessary for the wake word "בוט" and for live location). It does not answer messages that are not for it. The last `GROUP_CONTEXT` (15) of them from the last 2 hours are kept, so the bot understands "בוט, תוסיף את זה". They go to Claude only together with a message for the bot. `GROUP_CONTEXT=0` turns this off: then the bot drops these messages.
+- In the group, the bot receives all messages. With `ANSWER_ALL=true` (default) every family message goes to Claude: questions and requests are answered even without "בוט", and plain chatter between you ("אוקיי", "אני בדרך") gets no answer. `ANSWER_ALL=false` answers only messages that start with the wake word, mention the bot or reply to it. The last `GROUP_CONTEXT` (15) of them from the last 2 hours are kept, so the bot understands "בוט, תוסיף את זה". They go to Claude only together with a message for the bot. `GROUP_CONTEXT=0` turns this off: then the bot drops these messages.
 - The last 24 lines of each bot conversation are kept for 12 hours, for context.
 - The last shared location of a chat is kept for 30 minutes. Coordinates are saved only when you ask to save a place.
 - Messages for the bot go to the Anthropic API. By default, Anthropic does not use API data to train models.
@@ -132,6 +132,7 @@ Plain settings are in `wrangler.toml` under `[vars]` (or the dashboard). Secrets
 | `DIGEST_TIME` | Time of the morning summary; empty = off | `07:30` |
 | `CLAUDE_MODEL` | `claude-haiku-5-5` is cheaper; `claude-opus-5-5` is stronger | `claude-sonnet-5-5` |
 | `MAX_DAILY_CALLS` | Model calls per day | `300` |
+| `ANSWER_ALL` | Group: answer every question or request, not only "בוט, ..." (every group message costs a Claude call) | `true` |
 | `GROUP_CONTEXT` | Recent group messages (not for the bot, last 2 hours) given as context; 0 = off | `15` |
 | `WEB_SEARCH` | Web search for current facts ($10 per 1,000 searches) | `true` |
 
