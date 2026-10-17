@@ -34,6 +34,9 @@ the latest page. Elements marked `(below)` are further down; you can still click
 - Delivery has a minimum order (₪200 without the delivery fee, for Raanana). Below it, "לסיום קנייה" opens a popup
   "ההזמנה שלכם ... טרם הגיעה למינימום ... אנא הוסיפו לסל מוצרים בשווי ₪X". Do not add products the family did not ask
   for: close the popup ("אישור") and call `finish` with `reached_checkout: false`, `below_minimum: "₪X"` and the total.
+- After "לסיום קנייה": /checkout/details (delivery slot; the earliest is fine) -> /checkout/summary, the payment page
+  ("שיטות תשלום | סיכום קנייה", the card choice and "סיום הזמנה"). Stop there: finish with reached_checkout true.
+  "סיום הזמנה" places the order and is blocked.
 - Popups show at the top of the page under OPEN POPUP. If a click seems to do nothing, read the popup.
 
 ## For each item

@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { sleep } from './cdp.mjs';
 
 const SKILL = new URL('../.claude/skills/carrefour-order/SKILL.md', import.meta.url);
-const PAY = /(בצע|אשר|שלח|סיים|השלם)\s*(את\s*)?ה?(הזמנה|רכישה|תשלום)|לשלם עכשיו|^שלם|^תשלום$|place order|pay now|confirm order|complete purchase/i;
+// "סיום הזמנה" is Carrefour's final button; "לסיום קנייה" (cart -> checkout) stays allowed.
+const PAY = /(בצע|אשר|שלח|סיים|השלם)\s*(את\s*)?ה?(הזמנה|רכישה|תשלום)|סיום\s*(ה)?הזמנה|לשלם עכשיו|^שלם|^תשלום$|place order|pay now|confirm order|complete purchase/i;
 const CARD = /cc-|card|cvv|cvc|credit|אשראי|תוקף/i;
 const CHALLENGE = /just a moment|רק רגע|attention required/i;
 const ALLOWED_HOST = /(^|\.)carrefour\.co\.il$/;

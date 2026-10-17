@@ -37,7 +37,7 @@ test('the skill text for the shopper leaves out the maintenance notes', () => {
 test('fills the cart, is stopped at the pay button and at card fields, and reports what it added', async () => {
   const browser = fakeBrowser([
     { text: 'חיפוש' }, { text: 'הוסף לסל' }, { text: 'המשך לתשלום', goes: 'https://www.carrefour.co.il/checkout' },
-    { text: 'בצע הזמנה' }, { text: '', name: 'cardNumber', autocomplete: 'cc-number' },
+    { text: 'סיום הזמנה' }, { text: '', name: 'cardNumber', autocomplete: 'cc-number' },
   ]);
   const claude = scripted([
     [['type', { i: 0, text: 'חלב', enter: true }], ['click', { i: 1 }], ['item_result', { item_id: 1, status: 'added', product: 'חלב 3%', qty: 2 }]],
