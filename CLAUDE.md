@@ -12,7 +12,7 @@ When a request changes code, finish it with all of these, in order (the Stop hoo
 1. `npm test` passes. When the change affects what the bot says or saves, also `npm run test:live`.
 2. Commit. Never commit `.env`, `.dev.vars` or `data/`; only `.env.example` holds config names.
 3. Push. Not with `git push` from agent-box: it has no GitHub credentials on purpose. Use the skill
-   `.claude/skills/push-via-phone` (the commits go to the user's phone over Taildrop; they push from Termux).
+   `.claude/skills/push-via-phone` (the phone pulls the commits over SSH on Tailscale and pushes from Termux).
 4. `npm run deploy` (wrangler deploy, and records the deployed commit in `.git/deployed-sha`).
 
 ## Data
