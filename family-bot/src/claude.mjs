@@ -3,6 +3,11 @@ import { TOOLS, WEB_SEARCH_TOOL, runTool } from './tools.mjs';
 import { SYSTEM_PROMPT } from './prompt.mjs';
 
 const MAX_STEPS = 8;
+// Prompt caching. Tools + system prompt are the same for every message; family messages are usually 5-60 minutes apart,
+// so they are cached for 1 hour (write 2x, read 0.1x) instead of 5 minutes. Inside one answer the tool loop sends the
+// whole conversation again on every step, seconds apart: the top-level automatic mark caches that growing tail for 5
+// minutes. Longer TTLs must come first, so the 1-hour marks are on the prefix.
+const PREFIX_CACHE = { type: 'ephemeral', ttl: '1h' };
 
 export class Claude {
   constructor({ apiKey, model, baseUrl = 'https://api.anthropic.com', fetchImpl = (...a) => fetch(...a), maxTokens = 2048, webSearch = false, calendar = false }) {
@@ -11,10 +16,10 @@ export class Claude {
     this.baseUrl = baseUrl;
     this.fetch = fetchImpl;
     this.maxTokens = maxTokens;
-    // Cache the long, stable prefix (tools + system prompt): the cache mark goes on the last tool.
+    // The long, stable prefix (tools + system prompt): a cache mark on the last tool.
     const tools = calendar ? TOOLS : TOOLS.filter((t) => !t.name.startsWith('calendar_'));
     const all = webSearch ? [...tools, WEB_SEARCH_TOOL] : tools;
-    this.tools = all.map((t, i) => (i === all.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t));
+    this.tools = all.map((t, i) => (i === all.length - 1 ? { ...t, cache_control: PREFIX_CACHE } : t));
   }
 
   async call(body) {
@@ -45,21 +50,24 @@ export class Claude {
     const messages = [...history.map((h) => ({ role: h.role, content: h.content })), { role: 'user', content: userText }];
     // The API needs the first message to be from the user.
     while (messages.length && messages[0].role !== 'user') messages.shift();
-    const usage = { input: 0, output: 0 };
+    const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
     const toolCalls = [];
     for (let step = 0; step < MAX_STEPS; step++) {
       const resp = await this.call({
         model: this.model,
         max_tokens: this.maxTokens,
         system: [
-          { type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: SYSTEM_PROMPT, cache_control: PREFIX_CACHE },
           { type: 'text', text: contextText },
         ],
         tools: this.tools,
         messages,
+        cache_control: { type: 'ephemeral' },
       });
       usage.input += (resp.usage?.input_tokens ?? 0) + (resp.usage?.cache_creation_input_tokens ?? 0) + (resp.usage?.cache_read_input_tokens ?? 0);
       usage.output += resp.usage?.output_tokens ?? 0;
+      usage.cache_read += resp.usage?.cache_read_input_tokens ?? 0;
+      usage.cache_write += resp.usage?.cache_creation_input_tokens ?? 0;
       usage.searches = (usage.searches ?? 0) + (resp.usage?.server_tool_use?.web_search_requests ?? 0);
       messages.push({ role: 'assistant', content: resp.content });
       // A long web search can pause; send the same messages again to continue.

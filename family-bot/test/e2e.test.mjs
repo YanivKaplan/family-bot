@@ -88,7 +88,10 @@ test('wake word -> Claude -> tool -> reply in the group', async () => {
   assert.equal(first.messages.at(-1).content, 'יניב: תוסיף 2 חלב וביצים', 'wake word removed, sender added');
   assert.match(first.system[1].text, /הזמן עכשיו/);
   assert.match(first.system[1].text, /יניב: מישהו ראה את המפתחות\?/, 'earlier group chatter is context');
-  assert.ok(first.system[0].cache_control, 'system prompt is cached');
+  assert.deepEqual(first.system[0].cache_control, { type: 'ephemeral', ttl: '1h' }, 'system prompt cached for an hour');
+  assert.deepEqual(first.tools.at(-1).cache_control, { type: 'ephemeral', ttl: '1h' }, 'tools cached for an hour');
+  assert.deepEqual(first.cache_control, { type: 'ephemeral' }, 'the tool loop caches the conversation tail');
+  assert.equal(first.system[1].cache_control, undefined, 'the changing context (time, recent chat) is not cached');
   assert.equal((await db.entries()).length, 2);
   const s = sends().at(-1);
   assert.equal(s.body.chat_id, GROUP);

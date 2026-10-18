@@ -165,7 +165,8 @@ export class FamilyBot {
     let reply;
     try {
       const r = await this.claude.respond({ history: await db.history(chatId, 12 * 3600_000), userText, ctx, contextText });
-      await db.bumpUsage(day, { input: r.usage.input, output: r.usage.output, searches: r.usage.searches ?? 0 });
+      // input counts all input tokens; cache_read / cache_write show how much of it came from the prompt cache.
+      await db.bumpUsage(day, { input: r.usage.input, output: r.usage.output, cache_read: r.usage.cache_read ?? 0, cache_write: r.usage.cache_write ?? 0, searches: r.usage.searches ?? 0 });
       reply = r.text;
       if (r.toolCalls.some((c) => !c.ok)) this.log.warn?.('tool errors', JSON.stringify(r.toolCalls.filter((c) => !c.ok)));
     } catch (err) {
