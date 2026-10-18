@@ -53,6 +53,7 @@ export class Telegram {
       commands: [
         { command: 'list', description: 'כל הרשימות' },
         { command: 'reminders', description: 'תזכורות פעילות' },
+        { command: 'calendar', description: 'חיבור יומן גוגל' },
         { command: 'help', description: 'עזרה' },
         { command: 'id', description: 'מזהה הצ\'אט (להגדרה)' },
       ],

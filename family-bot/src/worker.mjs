@@ -2,6 +2,7 @@
 //   POST /telegram  – Telegram webhook (must carry the secret token header)
 //   cron (every minute) – reminders and the morning summary
 //   /shopper/*      – the home machine that fills online carts (Bearer SHOPPER_SECRET; 404 when not set)
+//   GET /google/callback – Google sends the browser back here after /calendar (one-time state; 404 without the calendar)
 // Everything else returns 404.
 import { loadConfig } from './config.mjs';
 import { HouseDB } from './db.mjs';
@@ -10,13 +11,15 @@ import { Telegram } from './telegram.mjs';
 import { FamilyBot } from './bot.mjs';
 import { claimOrder, reportOrder } from './order.mjs';
 import { localDate } from './time.mjs';
+import { finishConnect } from './calendar.mjs';
 
 // Kept per Worker isolate, so the schema check and getMe run once, not on every request.
 let schemaReady = false;
 let cachedMe = null;
 
-async function makeBot(env) {
+async function makeBot(env, origin) {
   const config = loadConfig(env);
+  config.publicUrl ??= origin ?? null;
   const db = new HouseDB(new D1Adapter(env.DB));
   const telegram = new Telegram({ token: config.telegramToken, baseUrl: config.telegramBaseUrl });
   if (!schemaReady) {
@@ -38,6 +41,24 @@ function sameSecret(a, b) {
   let diff = 0;
   for (let i = 0; i < ea.length; i++) diff |= ea[i] ^ eb[i];
   return diff === 0;
+}
+
+const page = (text, status = 200) => new Response(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><body dir="rtl" style="font:18px sans-serif;padding:24px">${text}</body>`,
+  { status, headers: { 'content-type': 'text/html; charset=utf-8' } });
+
+// The end of /calendar: keep the Google refresh token and tell the chat that asked.
+async function googleCallback(request, env, url) {
+  if (request.method !== 'GET' || !env.GOOGLE_CLIENT_ID) return new Response('Not found', { status: 404 });
+  const { config, db, bot } = await makeBot(env, url.origin);
+  if (url.searchParams.get('error')) return page('החיבור ליומן בוטל.', 400);
+  try {
+    const chatId = await finishConnect(db, { ...config.calendar, publicUrl: config.publicUrl }, Object.fromEntries(url.searchParams));
+    await bot.tg.send(chatId, '🗓️ יומן גוגל מחובר. מעכשיו אפשר לבקש "ותשים ביומן", לשאול מה יש ביומן, ולקבל תזכורות לאירועים ממנו.').catch(() => {});
+    return page('יומן גוגל מחובר ✅ אפשר לסגור את הדף ולחזור לטלגרם.');
+  } catch (err) {
+    console.error('google callback', err.message);
+    return page(`לא הצלחתי לחבר את היומן: ${err.message.replace(/[<>&]/g, '')}`, 400);
+  }
 }
 
 const json = (v, status = 200) => new Response(JSON.stringify(v), { status, headers: { 'content-type': 'application/json' } });
@@ -82,6 +103,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/shopper/')) return shopper(request, env, url.pathname);
+    if (url.pathname === '/google/callback') return googleCallback(request, env, url);
     if (request.method !== 'POST' || url.pathname !== '/telegram') return new Response('Not found', { status: 404 });
     if (!env.WEBHOOK_SECRET || env.WEBHOOK_SECRET.length < 32) {
       console.error('WEBHOOK_SECRET is missing or shorter than 32 characters');
@@ -98,7 +120,7 @@ export default {
     } catch {
       return new Response('Bad request', { status: 400 });
     }
-    const { db, bot } = await makeBot(env);
+    const { db, bot } = await makeBot(env, url.origin);
     // Telegram retries an update when the answer is slow. Handle each update only once.
     if (!Number.isInteger(update.update_id) || !(await db.firstSeen(update.update_id))) return new Response('ok');
     try {

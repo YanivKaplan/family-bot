@@ -10,6 +10,7 @@ What it does:
 - **Household memory** – "בוט, תזכור שתקציב האוכל שלנו הוא 3,000 ₪". The bot uses these facts in later discussions.
 - **Discussions and advice** – planning a week, meals, an event, or how to manage the expenses better. Web search for current facts (opening hours, prices, holidays), with sources.
 - **Morning summary** – at 07:30, the tasks and reminders for today (only if there are some).
+- **Google Calendar (optional)** – on request, reminders and dated tasks go to the family calendar and stay synced both ways: "בוט, תזכיר לנו ביום שלישי ב-17:00 חוג שחייה, ותשים ביומן". Edit, close or cancel in the bot and the event follows; move, rename, delete or put ✅ at the start of the title in the calendar and the bot follows. The bot also reads the calendar ("מה יש ביומן השבוע?") and can remind you of an existing event ("תזכיר לנו שעה לפני רופא השיניים שביומן") without ever changing that event. Uses Google's official Calendar MCP server. See setup step 8.
 
 ## Architecture
 
@@ -17,8 +18,9 @@ What it does:
 Family Telegram group ──webhook (secret header)──> Cloudflare Worker ──> Claude API (tools + web search)
                                                           │
                               cron, every minute ─────────┤
-                                                          └── Cloudflare D1 (SQLite): lists (one generic table),
-                                                              reminders, places, memory
+                                                          ├── Cloudflare D1 (SQLite): lists (one generic table),
+                                                          │   reminders, places, memory, calendar links
+                                                          └── Google Calendar MCP server (optional, OAuth)
 ```
 
 - **Hosting: Cloudflare Workers, free plan.** No credit card. Telegram calls the bot, so nothing runs all the time. The cron trigger sends the reminders.
@@ -40,11 +42,13 @@ Only your family can use the bot:
 | Claude can only change household data. It cannot pay, send email or open apps. The one outside action is filling the Carrefour cart for a list the family confirmed (`order_start`): the shopper on the home machine (`../shopper`) stops before payment and never types card details. The prompt forbids saving card numbers, bank accounts, passwords and ID numbers in memory. | Damage from a wrong or manipulated answer |
 | `MAX_DAILY_CALLS` (300), max 8 model steps per message, max 3 web searches per message, and a spend limit on the Anthropic workspace. | Unexpected cost |
 | Replies are plain text (no Markdown/HTML). | Links or formatting injected through text |
+| Google Calendar (optional): the sign-in link comes only from `/calendar` in a private chat with a family member, works once, for 15 minutes. The bot writes only to events it made; family events it only reads. Event titles are data for the model, not instructions. | Linking a stranger's calendar; the bot changing your own events |
 
 Privacy notes:
 - In the group, the bot receives all messages (this is necessary for the wake word "בוט" and for live location). It does not answer messages that are not for it. The last `GROUP_CONTEXT` (15) of them from the last 2 hours are kept, so the bot understands "בוט, תוסיף את זה". They go to Claude only together with a message for the bot. `GROUP_CONTEXT=0` turns this off: then the bot drops these messages.
 - The last 24 lines of each bot conversation are kept for 12 hours, for context.
 - The last shared location of a chat is kept for 30 minutes. Coordinates are saved only when you ask to save a place.
+- With Google Calendar connected, the Google refresh token is kept in D1 (`kv`, key `google:oauth`), and titles of the events the bot shows or syncs go to Claude. Disconnect at https://myaccount.google.com/permissions.
 - Messages for the bot go to the Anthropic API. By default, Anthropic does not use API data to train models.
 
 Make the Telegram group itself private: no public link, and "Approve new members" on.
@@ -107,6 +111,16 @@ The answer must be `{"ok":true,"result":true,"description":"Webhook was set"}`.
 2. Reply to the bot: `תשמור את זה כקניון הזהב, סוג קניון`.
 3. Do the same for the supermarket, the post office and the pharmacy.
 
+### 8. Google Calendar (optional)
+The bot talks to Google's official remote MCP server for Calendar (`https://calendarmcp.googleapis.com/mcp/v1`). It is in Google's **Developer Preview**: the Google account of the Cloud project must be in the [Google Workspace Developer Preview Program](https://developers.google.com/workspace/preview).
+1. In a Google Cloud project: `gcloud services enable calendar-json.googleapis.com calendarmcp.googleapis.com`.
+2. Google Auth Platform → consent screen: audience External (or Internal for Workspace), add the family Google account as a test user. Data Access: add `calendar.events`, `calendar.events.readonly`, `calendar.events.freebusy`, `calendar.calendarlist.readonly`.
+3. Clients → Create client → **Web application**, select **"Use this client for an AI-powered agent"**. Authorized redirect URI: `https://family-home-bot.<your-name>.workers.dev/google/callback`.
+4. Add the secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Optional: `GOOGLE_CALENDAR_ID` = the family calendar's id (Calendar settings → Integrate calendar), default `primary`.
+5. A family member sends `/calendar` to the bot in a private chat, opens the link and signs in with the account of the family calendar. The bot writes "יומן גוגל מחובר" in that chat.
+
+Notes: with the consent screen in "Testing", Google expires the sign-in after 7 days; publish the app (no verification needed for your own account) or send `/calendar` again. The bot reads up to 20 linked events per minute, so a change in the calendar arrives within a minute or two.
+
 ## Use
 
 In the group, start with **בוט** (or **עוזר**), tag the bot, or reply to a bot message. In a private chat with the bot, write normally.
@@ -119,7 +133,9 @@ In the group, start with **בוט** (or **עוזר**), tag the bot, or reply to 
 בוט, תזכור שתקציב האוכל שלנו הוא 3,000 ₪ בחודש
 בוט, בוא נחשוב איך לחסוך 1,000 ₪ בחודש
 בוט, עד מתי הדואר בגבעתיים פתוח היום?
-/list   /reminders   /help
+בוט, תזכיר לנו ביום שלישי ב-17:00 חוג שחייה, ותשים ביומן
+בוט, מה יש ביומן השבוע?
+/list   /reminders   /calendar   /help
 ```
 
 ## Settings
@@ -134,6 +150,8 @@ Plain settings are in `wrangler.toml` under `[vars]` (or the dashboard). Secrets
 | `MAX_DAILY_CALLS` | Model calls per day | `300` |
 | `GROUP_CONTEXT` | Recent group messages (not for the bot, last 2 hours) given as context; 0 = off | `15` |
 | `WEB_SEARCH` | Web search for current facts ($10 per 1,000 searches) | `true` |
+| `GOOGLE_CALENDAR_ID` | Calendar to sync with (secret or var) | `primary` |
+| `PUBLIC_URL` | The bot's address for the Google callback; the Worker finds it itself | – |
 
 ## Limits of the free plan
 
@@ -162,6 +180,7 @@ Working with Claude Code: `CLAUDE.md` says every change ends with test, commit, 
 | `src/claude.mjs` | Claude Messages API: tool loop, web search, prompt caching |
 | `src/tools.mjs` | The tools that Claude can call: generic lists (`list_*`), reminders, places, memory |
 | `src/prompt.mjs` | The Hebrew system prompt |
+| `src/calendar.mjs` | Google Calendar: MCP client, sign-in, two-way sync of linked reminders and entries |
 | `src/db.mjs` | Tables and data functions (async) |
 | `src/d1.mjs`, `src/node-sqlite.mjs` | SQL back ends: Cloudflare D1, node:sqlite |
 | `src/time.mjs` | Time zone, repeating dates, distance |

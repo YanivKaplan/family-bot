@@ -1,6 +1,7 @@
 // The tools that Claude can call. Each tool changes only household data in the DB.
 import { localToUtc, parseLocal, formatHe, nextOccurrence, localDate } from './time.mjs';
 import { startOrder } from './order.mjs';
+import { pushItem, removeItem, afterChange, importEvent, eventTime } from './calendar.mjs';
 
 const ids = { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 };
 const REPEAT = {
@@ -144,6 +145,35 @@ export const TOOLS = [
       'קרא רק אחרי שהצגת את הרשימה ובני המשפחה אישרו במפורש בהודעה נפרדת שהיא מלאה. entry_ids = הפריטים שאושרו.',
     input_schema: { type: 'object', properties: { entry_ids: ids, store: { type: 'string', enum: ['carrefour'] } }, required: ['entry_ids'] },
   },
+  {
+    name: 'calendar_show',
+    description: 'האירועים ביומן גוגל המשפחתי בין שני תאריכים (עד 62 יום). לכל אירוע id, ו-linked אם תזכורת או פריט כבר מקושרים אליו.',
+    input_schema: {
+      type: 'object',
+      properties: { from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD, ברירת מחדל = from' } },
+      required: ['from'],
+    },
+  },
+  {
+    name: 'calendar_sync',
+    description: 'סנכרון תזכורות ופריטים ליומן גוגל, רק כשמבקשים: כל אחד מקבל אירוע ביומן (פריט צריך due). מאז הם מסונכרנים בשני הכיוונים: ' +
+      'שינוי, סגירה או ביטול בבוט מעדכנים את האירוע, ושינוי ביומן (כותרת, זמן, חזרה, ✅ בתחילת הכותרת = בוצע, מחיקה) חוזר לבוט. off=true מוריד מהיומן.',
+    input_schema: { type: 'object', properties: { reminder_ids: ids, entry_ids: ids, off: { type: 'boolean' } } },
+  },
+  {
+    name: 'calendar_import',
+    description: 'אירוע שכבר ביומן (id מ-calendar_show) → תזכורת בצ\'אט הזה (as=reminder; minutes_before = כמה דקות לפני, באירוע של יום שלם הבסיס הוא 09:00 באותו יום) ' +
+      'או פריט ברשימה (as=entry, list). הם עוקבים אחרי האירוע: הוא זז – הם זזים, הוא נמחק – התזכורת מתבטלת. הבוט לא משנה את האירוע עצמו. ' +
+      'אפשר כמה תזכורות לאותו אירוע (למשל יום לפני ושעה לפני).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string' }, as: { type: 'string', enum: ['reminder', 'entry'] },
+        minutes_before: { type: 'integer', minimum: 0, maximum: 43_200 }, list: { type: 'string' },
+      },
+      required: ['event_id'],
+    },
+  },
 ];
 
 // Server tool: Anthropic runs the search. Billed per search ($10 per 1,000).
@@ -179,8 +209,27 @@ function firstRun(at, repeat, now, tz) {
   return nextAt;
 }
 
+function needCalendar(ctx) {
+  if (!ctx.calendar) throw new Error('יומן גוגל לא מוגדר בבוט');
+  return ctx.calendar;
+}
+
+// After a change in the bot, linked calendar events follow. A calendar error does not undo the change in the bot.
+async function followCalendar(ctx, out, kind, ids) {
+  if (!ctx.calendar) return out;
+  try {
+    await afterChange(ctx.db, ctx.calendar, kind, ids);
+  } catch (err) {
+    out.calendar_error = err.message;
+  }
+  return out;
+}
+
+// Ids of the items of one kind that are in the calendar (empty without a calendar).
+const inCalendar = async (ctx, kind) => new Set(ctx.calendar ? (await ctx.db.calendarLinks(kind)).map((l) => l.item_id) : []);
+
 /**
- * ctx: { db, tz, chatId, user, now, lastLocation }
+ * ctx: { db, tz, chatId, user, now, lastLocation, ordersEnabled, calendar }
  * Returns a JSON-serializable result. Throws Error with a Hebrew message on bad input.
  */
 export async function runTool(name, input, ctx) {
@@ -191,18 +240,20 @@ export async function runTool(name, input, ctx) {
     case 'list_add':
       return { added: (await db.addEntries(input.entries, user, now)).map((e) => entryView(e, today)) };
     case 'list_show': {
-      const out = { today, lists: await db.lists(), open: (await db.entries({ list: input.list })).map((e) => entryView(e, today)) };
-      if (input.include_done) out.done_last_7_days = (await db.entries({ list: input.list, doneSince: now - 7 * 86_400_000 })).map((e) => entryView(e, today));
+      const cal = await inCalendar(ctx, 'entry');
+      const view = (e) => ({ ...entryView(e, today), ...(cal.has(e.id) ? { calendar: true } : {}) });
+      const out = { today, lists: await db.lists(), open: (await db.entries({ list: input.list })).map(view) };
+      if (input.include_done) out.done_last_7_days = (await db.entries({ list: input.list, doneSince: now - 7 * 86_400_000 })).map(view);
       return out;
     }
     case 'list_update': {
       const out = [];
       for (const id of input.ids) out.push(entryView(await db.updateEntry(id, input, user, now), today));
-      return { updated: out };
+      return followCalendar(ctx, { updated: out }, 'entry', input.ids);
     }
     case 'list_delete':
-      if (input.ids?.length) return { deleted_ids: await db.deleteEntries(input.ids) };
-      if (input.list) return { deleted: await db.deleteList(input.list) };
+      if (input.ids?.length) return followCalendar(ctx, { deleted_ids: await db.deleteEntries(input.ids) }, 'entry', input.ids);
+      if (input.list) return followCalendar(ctx, { deleted: await db.deleteList(input.list) }, 'entry');
       throw new Error('צריך ids או list');
     case 'list_rename':
       return { moved: await db.renameList(input.from, input.to) };
@@ -212,10 +263,14 @@ export async function runTool(name, input, ctx) {
       const r = await db.addReminder({ chat_id: chatId, text: input.text, start_local: input.at, next_at: nextAt, rule: input.repeat ?? null, task_id: input.entry_id }, user, now);
       return { reminder: { id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined } };
     }
-    case 'reminders_show':
+    case 'reminders_show': {
+      const cal = await inCalendar(ctx, 'reminder');
       return {
-        reminders: (await db.activeReminders()).map((r) => ({ id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined, entry_id: r.task_id ?? undefined })),
+        reminders: (await db.activeReminders()).map((r) => ({
+          id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined, entry_id: r.task_id ?? undefined, calendar: cal.has(r.id) || undefined,
+        })),
       };
+    }
     case 'reminder_update': {
       const old = await db.reminder(input.id);
       if (!old?.active) throw new Error(`אין תזכורת פעילה ${input.id}`);
@@ -224,10 +279,10 @@ export async function runTool(name, input, ctx) {
       const timing = input.at !== undefined || input.repeat !== undefined || input.repeat_off
         ? { start_local: at, next_at: firstRun(at, rule, now, tz), rule } : {};
       const r = await db.updateReminder(input.id, { text: input.text, ...timing });
-      return { reminder: { id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined } };
+      return followCalendar(ctx, { reminder: { id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined } }, 'reminder', [r.id]);
     }
     case 'reminder_cancel':
-      return { cancelled_ids: await db.cancelReminders(input.ids) };
+      return followCalendar(ctx, { cancelled_ids: await db.cancelReminders(input.ids) }, 'reminder', input.ids);
     case 'place_save': {
       const loc = input.use_last_location ? ctx.lastLocation : null;
       if (input.use_last_location && !loc) throw new Error('לא שותף מיקום בצ\'אט הזה לאחרונה');
@@ -256,6 +311,42 @@ export async function runTool(name, input, ctx) {
       const job = await startOrder(db, { chatId, by: user, store: input.store, entries }, now);
       return { order: { id: job.id, items: job.items.length, status: 'נשלח לרובוט; הוא יכתוב כאן כשהסל מוכן' } };
     }
+    case 'calendar_show': {
+      const cal = needCalendar(ctx);
+      const links = await db.calendarLinks();
+      return {
+        events: (await cal.between(input.from, input.to ?? input.from)).map((e) => {
+          const id = e.recurringEventId ?? e.id;
+          const linked = links.filter((l) => l.event_id === id).map((l) => `${l.kind} ${l.item_id}`);
+          return {
+            id, title: e.summary ?? '', start: eventTime(e.start, tz), end: e.end?.dateTime ? eventTime(e.end, tz) : undefined,
+            all_day: Boolean(e.start?.date) || undefined, repeats: Boolean(e.recurringEventId || e.recurrence?.length) || undefined,
+            location: e.location || undefined, linked: linked.length ? linked : undefined,
+          };
+        }),
+      };
+    }
+    case 'calendar_sync': {
+      const cal = needCalendar(ctx);
+      const items = [...(input.reminder_ids ?? []).map((id) => ['reminder', id]), ...(input.entry_ids ?? []).map((id) => ['entry', id])];
+      if (!items.length) throw new Error('צריך reminder_ids או entry_ids');
+      const done = [], failed = [];
+      for (const [kind, id] of items) {
+        try {
+          if (!input.off) await pushItem(db, cal, kind, id);
+          else {
+            const link = await db.calendarLink(kind, id);
+            if (link) await removeItem(db, cal, link);
+          }
+          done.push(`${kind} ${id}`);
+        } catch (err) {
+          failed.push({ item: `${kind} ${id}`, error: err.message });
+        }
+      }
+      return { [input.off ? 'removed_from_calendar' : 'in_calendar']: done, ...(failed.length ? { failed } : {}) };
+    }
+    case 'calendar_import':
+      return { imported: await importEvent(db, needCalendar(ctx), input, { chatId, user, now }) };
     default:
       throw new Error(`כלי לא מוכר: ${name}`);
   }

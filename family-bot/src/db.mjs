@@ -17,6 +17,8 @@ const SCHEMA = [
   `DROP TABLE items`, `DROP TABLE IF EXISTS tasks`,
   `CREATE INDEX IF NOT EXISTS reminders_next ON reminders(active, next_at)`,
   `CREATE INDEX IF NOT EXISTS history_chat ON history(chat_id, id)`,
+  // Google Calendar: one event per reminder or entry (src/calendar.mjs). An event can have more than one reminder.
+  `CREATE TABLE IF NOT EXISTS calendar_links (kind TEXT NOT NULL, item_id INTEGER NOT NULL, event_id TEXT NOT NULL, owner TEXT NOT NULL, offset_min INTEGER NOT NULL DEFAULT 0, updated TEXT, PRIMARY KEY (kind, item_id))`,
 ];
 
 const MAX_TEXT = 300;
@@ -162,12 +164,14 @@ export class HouseDB {
     else await this.sql.run('UPDATE reminders SET active = 0 WHERE id = ?', [id]);
   }
 
-  async updateReminder(id, { text, start_local, next_at, rule }) {
+  // active (true/false) is set only by the calendar sync: an event moved to the future turns a fired reminder on again.
+  async updateReminder(id, { text, start_local, next_at, rule, active }) {
     const r = await this.reminder(id);
-    if (!r?.active) throw new Error(`אין תזכורת פעילה ${id}`);
-    await this.sql.run('UPDATE reminders SET text=?, start_local=?, next_at=?, rule=? WHERE id=?', [
+    if (!r || (!r.active && active == null)) throw new Error(`אין תזכורת פעילה ${id}`);
+    await this.sql.run('UPDATE reminders SET text=?, start_local=?, next_at=?, rule=?, active=? WHERE id=?', [
       text !== undefined ? clean(text, 'text', 300) : r.text, start_local ?? r.start_local, next_at ?? r.next_at,
-      rule !== undefined ? (rule ? JSON.stringify(rule) : null) : (r.rule ? JSON.stringify(r.rule) : null), r.id,
+      rule !== undefined ? (rule ? JSON.stringify(rule) : null) : (r.rule ? JSON.stringify(r.rule) : null),
+      active == null ? r.active : active ? 1 : 0, r.id,
     ]);
     return this.reminder(id);
   }
@@ -248,6 +252,26 @@ export class HouseDB {
     for (const id of ids.map(Number)) if ((await this.sql.run('DELETE FROM notes WHERE id = ?', [id])).changes > 0) out.push(id);
     return out;
   }
+
+  // ---- Google Calendar links. owner 'bot' = the bot made the event; 'calendar' = a family event the item follows.
+  async linkCalendar({ kind, item_id, event_id, owner, offset_min = 0, updated = null }) {
+    await this.sql.run(`INSERT INTO calendar_links (kind, item_id, event_id, owner, offset_min, updated) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(kind, item_id) DO UPDATE SET event_id = excluded.event_id, owner = excluded.owner, offset_min = excluded.offset_min, updated = excluded.updated`,
+    [kind, Number(item_id), event_id, owner, Number(offset_min) || 0, updated]);
+    return this.calendarLink(kind, item_id);
+  }
+
+  calendarLink(kind, id) { return this.sql.get('SELECT * FROM calendar_links WHERE kind = ? AND item_id = ?', [kind, Number(id)]); }
+
+  // All links, or of one kind, or of some items of that kind.
+  calendarLinks(kind, ids) {
+    if (!kind) return this.sql.all('SELECT * FROM calendar_links');
+    if (!ids) return this.sql.all('SELECT * FROM calendar_links WHERE kind = ?', [kind]);
+    if (!ids.length) return [];
+    return this.sql.all(`SELECT * FROM calendar_links WHERE kind = ? AND item_id IN (${ids.map(() => '?').join(',')})`, [kind, ...ids.map(Number)]);
+  }
+
+  async unlinkCalendar(kind, id) { await this.sql.run('DELETE FROM calendar_links WHERE kind = ? AND item_id = ?', [kind, Number(id)]); }
 
   // ---- conversation history (short, per chat)
   async addHistory(chatId, role, content, keep = 24, now = Date.now()) {

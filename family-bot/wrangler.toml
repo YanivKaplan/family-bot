@@ -30,4 +30,5 @@ GROUP_CONTEXT = "15"
 
 # Secrets (set them as encrypted secrets, never here):
 #   TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, WEBHOOK_SECRET, ALLOWED_CHAT_IDS, ALLOWED_USER_IDS, FAMILY_MEMBERS
+#   optional Google Calendar: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALENDAR_ID
 # See .dev.vars.example.

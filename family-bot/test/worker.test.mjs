@@ -153,3 +153,14 @@ test('an order under the store minimum: the group gets the cart link and how muc
   });
   assert.match(text, /מתחת למינימום[^\n]*₪192\.00[\s\S]*לסל \(מחוברים/);
 });
+
+test('Google sign-in callback: 404 without the calendar, refuses an unknown state, no calendar tools for Claude', async () => {
+  const cb = (q, extra = {}) => worker.fetch(new Request(`https://bot.example.workers.dev/google/callback?${q}`), { ...env, ...extra });
+  assert.equal((await cb('code=x&state=y')).status, 404);
+  const res = await cb('code=x&state=y', { GOOGLE_CLIENT_ID: 'cid', GOOGLE_CLIENT_SECRET: 'cs' });
+  assert.equal(res.status, 400);
+  assert.match(await res.text(), /שלחו \/calendar שוב/);
+  const { Claude } = await import('../src/claude.mjs');
+  assert.equal(new Claude({ apiKey: 'k', model: 'm' }).tools.some((t) => t.name.startsWith('calendar_')), false);
+  assert.equal(new Claude({ apiKey: 'k', model: 'm', calendar: true }).tools.filter((t) => t.name.startsWith('calendar_')).length, 3);
+});

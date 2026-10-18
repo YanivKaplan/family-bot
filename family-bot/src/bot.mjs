@@ -4,18 +4,20 @@ import { Claude } from './claude.mjs';
 import { contextBlock } from './prompt.mjs';
 import { HELP, formatLists, formatReminders, formatDigest } from './format.mjs';
 import { localDate, localParts, nextOccurrence, distanceM, formatHe } from './time.mjs';
+import { GoogleCalendar, pullCalendar, connectLink, isConnected } from './calendar.mjs';
 
 const LOCATION_TTL_MS = 30 * 60_000;
 const CHAT_TTL_MS = 2 * 3600_000;
 
 export class FamilyBot {
-  constructor({ config, db, telegram, claude, log = console }) {
+  constructor({ config, db, telegram, claude, calendar, log = console }) {
     this.cfg = config;
     this.db = db;
     this.tg = telegram;
+    this.calendar = calendar ?? (config.calendar ? new GoogleCalendar({ ...config.calendar, tz: config.tz, db }) : null);
     this.claude = claude ?? new Claude({
       apiKey: config.anthropicKey, model: config.model, baseUrl: config.anthropicBaseUrl,
-      maxTokens: config.maxTokens, webSearch: config.webSearch,
+      maxTokens: config.maxTokens, webSearch: config.webSearch, calendar: Boolean(this.calendar),
     });
     this.log = log;
     this.me = config.botId ? { id: config.botId, username: config.botUsername } : null;
@@ -56,7 +58,7 @@ export class FamilyBot {
     if (isEdit || !text) return;
     if (!this.isTriggered(msg, text)) return this.rememberChat(msg, text); // not for the bot: no answer, kept only as context
 
-    const fixed = await this.fixedCommand(text);
+    const fixed = await this.fixedCommand(text, msg);
     if (fixed) return this.tg.send(msg.chat.id, fixed, { replyTo: msg.message_id });
     return this.converse(msg, this.stripTrigger(text));
   }
@@ -103,12 +105,23 @@ export class FamilyBot {
     return t || 'שלום';
   }
 
-  async fixedCommand(text) {
+  async fixedCommand(text, msg) {
     const { db, cfg } = this;
     if (this.isCommand(text, 'start') || this.isCommand(text, 'help') || /^(עזרה|help)$/u.test(this.stripTrigger(text))) return HELP;
     if (this.isCommand(text, 'list') || this.isCommand(text, 'tasks')) return formatLists(await db.entries(), cfg.tz);
     if (this.isCommand(text, 'reminders')) return formatReminders(await db.activeReminders(), cfg.tz);
+    if (this.isCommand(text, 'calendar')) return this.calendarCommand(msg);
     return null;
+  }
+
+  // /calendar: a one-time Google sign-in link, sent only in a private chat (it connects the family account).
+  async calendarCommand(msg) {
+    const { db, cfg } = this;
+    if (!cfg.calendar) return 'יומן גוגל לא מוגדר בבוט (GOOGLE_CLIENT_ID ו-GOOGLE_CLIENT_SECRET).';
+    if (!cfg.publicUrl) return 'חסרה הכתובת של הבוט (PUBLIC_URL), אז אי אפשר לחבר את היומן.';
+    const status = (await isConnected(db)) ? 'היומן כבר מחובר ✅ אפשר לחבר מחדש (למשל לחשבון אחר).' : 'היומן עוד לא מחובר.';
+    if (msg.chat.type !== 'private') return `${status}\nכדי לחבר, שלחו לי /calendar בצ'אט פרטי.`;
+    return `${status}\nלחיבור יומן גוגל, פתחו את הקישור והתחברו לחשבון של היומן המשפחתי (תקף ל-15 דקות, פעם אחת):\n${await connectLink(db, { ...cfg.calendar, publicUrl: cfg.publicUrl }, msg.chat.id)}`;
   }
 
   // Recent group chatter (GROUP_CONTEXT messages, 2 hours). It goes to Claude only with the next message for the bot,
@@ -140,7 +153,7 @@ export class FamilyBot {
     const userText = systemNote ? `[מערכת] ${text}` : `${user}: ${text}`;
     const loc = await db.get(`loc:${chatId}`);
     const ctx = {
-      db, tz: cfg.tz, chatId, user, now, ordersEnabled: Boolean(cfg.shopperSecret),
+      db, tz: cfg.tz, chatId, user, now, ordersEnabled: Boolean(cfg.shopperSecret), calendar: this.calendar,
       lastLocation: loc && now - loc.ts < LOCATION_TTL_MS ? loc : null,
     };
     const contextText = contextBlock({
@@ -194,9 +207,18 @@ export class FamilyBot {
     return this.converse(msg, note, { systemNote: true, silentIfDash: isLive });
   }
 
-  // ---- scheduler: reminders and the morning summary. Call it every minute.
+  // ---- scheduler: calendar changes, reminders and the morning summary. Call it every minute.
   async tick(now = Date.now()) {
     const { db, cfg } = this;
+    // First the calendar, so a reminder moved there does not fire at its old time.
+    if (this.calendar) {
+      try {
+        const { errors } = await pullCalendar(db, this.calendar, now);
+        if (errors.length) this.log.warn?.('calendar sync', JSON.stringify(errors));
+      } catch (err) {
+        this.log.error?.('calendar sync failed', err.message);
+      }
+    }
     for (const r of await db.dueReminders(now)) {
       // Move the reminder forward before the send, so a crash never sends it twice.
       const next = r.rule ? nextOccurrence(r.rule, r.start_local, now, cfg.tz) : null;

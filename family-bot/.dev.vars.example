@@ -11,3 +11,8 @@ ALLOWED_CHAT_IDS=
 ALLOWED_USER_IDS=
 # Family names, comma-separated (optional)
 FAMILY_MEMBERS=
+# Optional: Google Calendar (README step 8). An OAuth web client of a Google Cloud project with the Calendar MCP API on
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+# The calendar to sync with; empty = the primary calendar of the connected account
+GOOGLE_CALENDAR_ID=

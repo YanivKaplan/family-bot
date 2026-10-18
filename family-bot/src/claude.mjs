@@ -5,14 +5,15 @@ import { SYSTEM_PROMPT } from './prompt.mjs';
 const MAX_STEPS = 8;
 
 export class Claude {
-  constructor({ apiKey, model, baseUrl = 'https://api.anthropic.com', fetchImpl = (...a) => fetch(...a), maxTokens = 2048, webSearch = false }) {
+  constructor({ apiKey, model, baseUrl = 'https://api.anthropic.com', fetchImpl = (...a) => fetch(...a), maxTokens = 2048, webSearch = false, calendar = false }) {
     this.apiKey = apiKey;
     this.model = model;
     this.baseUrl = baseUrl;
     this.fetch = fetchImpl;
     this.maxTokens = maxTokens;
     // Cache the long, stable prefix (tools + system prompt): the cache mark goes on the last tool.
-    const all = webSearch ? [...TOOLS, WEB_SEARCH_TOOL] : TOOLS;
+    const tools = calendar ? TOOLS : TOOLS.filter((t) => !t.name.startsWith('calendar_'));
+    const all = webSearch ? [...tools, WEB_SEARCH_TOOL] : tools;
     this.tools = all.map((t, i) => (i === all.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t));
   }
 

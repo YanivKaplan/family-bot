@@ -9,6 +9,11 @@ export function loadConfig(env) {
   const allowedChats = ids(env.ALLOWED_CHAT_IDS);
   const digestTime = env.DIGEST_TIME ?? '07:30';
   if (digestTime && !/^\d{2}:\d{2}$/.test(digestTime)) throw new Error('DIGEST_TIME must be HH:MM or empty');
+  // Google Calendar through Google's MCP server (src/calendar.mjs): the OAuth client = on. The family connects with /calendar.
+  const calendar = env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET ? {
+    clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, calendarId: env.GOOGLE_CALENDAR_ID || 'primary',
+    mcpUrl: env.GOOGLE_CALENDAR_MCP_URL || undefined, tokenUrl: env.GOOGLE_TOKEN_URL || undefined,
+  } : null;
   return {
     telegramToken: env.TELEGRAM_BOT_TOKEN,
     telegramBaseUrl: env.TELEGRAM_API_BASE || 'https://api.telegram.org',
@@ -32,5 +37,7 @@ export function loadConfig(env) {
     maxDailyCalls: Number(env.MAX_DAILY_CALLS ?? 300),
     maxTokens: Number(env.MAX_TOKENS ?? 2048),
     webSearch: String(env.WEB_SEARCH ?? 'true').toLowerCase() === 'true',
+    calendar,
+    publicUrl: env.PUBLIC_URL || null, // the Worker's own address, for the Google sign-in callback (the Worker fills it in)
   };
 }
