@@ -1,36 +1,34 @@
-// Google Calendar through Google's official remote MCP server (calendarmcp.googleapis.com, Streamable HTTP).
-// The bot is the MCP client: JSON-RPC tools/call with the family account's OAuth token (built-in fetch only).
+// Google Calendar (REST API v3) with the family account's OAuth token. Built-in fetch only.
 // Connecting: a family member sends /calendar, signs in to Google with the link, and /google/callback (worker.mjs)
 // keeps the refresh token in kv.
-// Only what the family asks for is synced:
+// - Any event: show, add, update, delete (calendar_* tools).
+// - Sync on request:
 //   - calendar_sync: a bot reminder or a dated list entry gets an event that the bot owns. Changes in the bot update the
-//     event; changes in the calendar (title, time, repeat, "✅" at the start of the title = done, delete) come back on a
-//     tick (pullCalendar).
-//   - calendar_import: an existing family event gets a bot reminder (or entry) that follows it. The bot never changes
-//     or deletes that event.
+//     event; changes in the calendar (title, time, repeat, "✅" at the start of the title = done, delete) come back on the
+//     next tick (pullCalendar).
+//   - calendar_import: an existing family event gets a bot reminder (or entry) that follows it. Cancelling that reminder
+//     does not delete the event.
 // Links are in the calendar_links table. `updated` is the event's last change that the bot already knows (its own write
-// or an applied pull), so the bot's own writes do not come back as changes.
+// or an applied change), so the bot's own writes do not come back as changes.
 import { localDateTime, localToUtc, nextOccurrence, parseLocal } from './time.mjs';
 import { formatEntry } from './format.mjs';
 
-const MCP_URL = 'https://calendarmcp.googleapis.com/mcp/v1';
+const API_BASE = 'https://www.googleapis.com/calendar/v3';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
-// The scopes Google lists for the Calendar MCP server, and calendar.events for its write tools.
-const SCOPES = ['calendar.calendarlist.readonly', 'calendar.events.freebusy', 'calendar.events.readonly', 'calendar.events']
-  .map((s) => `https://www.googleapis.com/auth/${s}`).join(' ');
+const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const OAUTH_KEY = 'google:oauth';
 const STATE_KEY = 'google:state';
-const PULL_MAX = 20; // events read per tick (Workers free plan: 50 outgoing requests per run)
 const DONE = '✅';
 const BY = 'יומן';
 const tokens = new Map(); // per isolate / process: refresh token -> { token, exp }
 const NOT_CONNECTED = 'יומן גוגל עוד לא מחובר. שלחו לבוט /calendar כדי לחבר אותו.';
+const gone = (err) => [404, 410].includes(err.status);
 
 export class GoogleCalendar {
-  constructor({ clientId, clientSecret, calendarId = 'primary', tz, db, mcpUrl = MCP_URL, tokenUrl = TOKEN_URL, fetchImpl = (...a) => fetch(...a) }) {
-    Object.assign(this, { clientId, clientSecret, calendarId, tz, db, mcpUrl, tokenUrl, fetch: fetchImpl });
-    this.rpcId = 0;
+  constructor({ clientId, clientSecret, calendarId = 'primary', tz, db, apiBase = API_BASE, tokenUrl = TOKEN_URL, fetchImpl = (...a) => fetch(...a) }) {
+    Object.assign(this, { clientId, clientSecret, tz, db, tokenUrl, fetch: fetchImpl });
+    this.base = `${apiBase}/calendars/${encodeURIComponent(calendarId)}/events`;
   }
 
   // Access token from the stored refresh token, kept until a minute before it expires.
@@ -52,62 +50,51 @@ export class GoogleCalendar {
     return json.access_token;
   }
 
-  // One MCP tools/call. The answer is JSON or an SSE stream; the result is the tool's structured output.
-  async tool(name, args) {
-    const id = ++this.rpcId;
-    const res = await this.fetch(this.mcpUrl, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${await this.token()}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: { calendarId: this.calendarId, ...args } } }),
-      signal: AbortSignal.timeout(20_000),
+  async call(method, path = '', { query, body } = {}) {
+    const res = await this.fetch(`${this.base}${path}${query ? `?${new URLSearchParams(query)}` : ''}`, {
+      method,
+      headers: { authorization: `Bearer ${await this.token()}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
     });
-    const text = await res.text();
-    let msg = null;
-    try {
-      msg = (res.headers.get('content-type') ?? '').includes('text/event-stream')
-        ? text.split('\n').filter((l) => l.startsWith('data:')).map((l) => JSON.parse(l.slice(5))).find((m) => m.id === id)
-        : JSON.parse(text);
-    } catch { /* not JSON-RPC: reported below */ }
-    const fail = (detail) => Object.assign(new Error(`Google Calendar ${name}: ${String(detail).slice(0, 300)}`), { detail: String(detail) });
-    if (!msg) throw fail(`HTTP ${res.status} ${text}`);
-    if (msg.error) throw fail(msg.error.message ?? JSON.stringify(msg.error));
-    const out = msg.result ?? {};
-    const body = (out.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('');
-    if (out.isError) throw fail(body || 'error');
-    if (out.structuredContent) return out.structuredContent;
-    try { return body ? JSON.parse(body) : {}; } catch { return { text: body }; }
+    if (res.status === 204) return null;
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(`Google Calendar ${res.status}: ${json.error?.message ?? ''}`.trim()), { status: res.status });
+    return json;
   }
 
-  // null when the event does not exist any more.
-  async get(eventId) {
-    try {
-      return await this.tool('get_event', { eventId });
-    } catch (err) {
-      if (/not.?found|404|410|deleted|\bgone\b/i.test(err.detail ?? '')) return null;
-      throw err;
-    }
-  }
+  // null when there is no such event. A deleted event can come back with status "cancelled".
+  get(id) { return this.call('GET', `/${encodeURIComponent(id)}`).catch((e) => (gone(e) ? null : Promise.reject(e))); }
+  // Writes never email guests (sendUpdates=none).
+  insert(ev) { return this.call('POST', '', { query: { sendUpdates: 'none' }, body: ev }); }
+  update(id, ev) { return this.call('PUT', `/${encodeURIComponent(id)}`, { query: { sendUpdates: 'none' }, body: ev }); }
+  remove(id) { return this.call('DELETE', `/${encodeURIComponent(id)}`, { query: { sendUpdates: 'none' } }).catch((e) => (gone(e) ? null : Promise.reject(e))); }
 
-  insert(args) { return this.tool('create_event', { notificationLevel: 'NONE', ...args }); }
-  update(eventId, args) { return this.tool('update_event', { eventId, notificationLevel: 'NONE', ...args }); }
-  async remove(eventId) {
-    try {
-      await this.tool('delete_event', { eventId, notificationLevel: 'NONE' });
-    } catch (err) {
-      if (!/not.?found|404|410|deleted|\bgone\b/i.test(err.detail ?? '')) throw err;
-    }
-  }
-
-  // Events between two local dates (both included).
-  async between(from, to) {
+  // Events between two local dates (both included), each repeat as its own instance. q = free text.
+  async between(from, to, q) {
     const days = (Date.parse(to) - Date.parse(from)) / 86_400_000 + 1;
     if (![from, to].every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) || !(days >= 1 && days <= 62)) throw new Error('טווח תאריכים: from עד to בפורמט YYYY-MM-DD, עד 62 יום');
-    const r = await this.tool('list_events', {
-      startTime: new Date(localToUtc(`${from}T00:00`, this.tz)).toISOString(),
-      endTime: new Date(localToUtc(`${nextDay(to)}T00:00`, this.tz)).toISOString(),
-      timeZone: this.tz, orderBy: 'startTime', pageSize: 100,
+    const r = await this.call('GET', '', {
+      query: {
+        timeMin: new Date(localToUtc(`${from}T00:00`, this.tz)).toISOString(), timeMax: new Date(localToUtc(`${nextDay(to)}T00:00`, this.tz)).toISOString(),
+        singleEvents: 'true', orderBy: 'startTime', maxResults: '100', ...(q ? { q } : {}),
+      },
     });
-    return r.events ?? [];
+    return r.items ?? [];
+  }
+
+  // Every event changed or deleted since `sinceMs` (a repeating event as one series).
+  async changedSince(sinceMs) {
+    const out = [];
+    let pageToken;
+    for (let page = 0; page < 5; page++) {
+      const r = await this.call('GET', '', {
+        query: { updatedMin: new Date(sinceMs).toISOString(), showDeleted: 'true', maxResults: '250', ...(pageToken ? { pageToken } : {}) },
+      });
+      out.push(...(r.items ?? []));
+      if (!(pageToken = r.nextPageToken)) break;
+    }
+    return out;
   }
 }
 
@@ -118,7 +105,7 @@ export async function connectLink(db, { clientId, publicUrl }, chatId, now = Dat
   const state = [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await db.set(STATE_KEY, { state, chat_id: chatId, exp: now + 15 * 60_000 });
   return `${AUTH_URL}?${new URLSearchParams({
-    client_id: clientId, redirect_uri: `${publicUrl}/google/callback`, response_type: 'code', scope: SCOPES,
+    client_id: clientId, redirect_uri: `${publicUrl}/google/callback`, response_type: 'code', scope: SCOPE,
     access_type: 'offline', prompt: 'consent', state,
   })}`;
 }
@@ -142,19 +129,32 @@ export async function finishConnect(db, { clientId, clientSecret, publicUrl, tok
 
 export const isConnected = async (db) => Boolean((await db.get(OAUTH_KEY))?.refresh_token);
 
-// ---- event <-> bot item
+// ---- times and repeats
 
-const nextDay = (date) => new Date(Date.parse(date) + 86_400_000).toISOString().slice(0, 10);
+const nextDay = (date, n = 1) => new Date(Date.parse(date) + n * 86_400_000).toISOString().slice(0, 10);
 
-// An event time as local "YYYY-MM-DD" (all day; the MCP server sends it as midnight UTC) or "YYYY-MM-DDTHH:MM".
-export const eventTime = (t, tz) => (t?.date ? t.date.slice(0, 10) : localDateTime(new Date(t.dateTime), tz));
+// An event time as local "YYYY-MM-DD" (all day) or "YYYY-MM-DDTHH:MM". A dateTime without an offset is in its timeZone.
+export function eventTime(t, tz) {
+  if (t?.date) return t.date.slice(0, 10);
+  const ms = /(Z|[+-]\d\d:\d\d)$/i.test(t.dateTime) ? Date.parse(t.dateTime) : localToUtc(t.dateTime.slice(0, 16), t.timeZone ?? tz);
+  return localDateTime(new Date(ms), tz);
+}
 
 const shift = (local, min, tz) => localDateTime(new Date(localToUtc(local, tz) + min * 60_000), tz);
 
-// create_event / update_event times. timeZone wins over offsets, so local wall-clock times are sent as is.
-function when(local, minutes, tz) {
-  if (!parseLocal(local).hasTime) return { startTime: `${local}T00:00:00`, endTime: `${nextDay(local)}T00:00:00`, allDay: true, timeZone: tz };
-  return { startTime: `${local}:00`, endTime: `${shift(local, minutes, tz)}:00`, allDay: false, timeZone: tz };
+// Local start (and end) -> the event's start/end. All-day ends are inclusive here (Google's are the next day).
+function span(start, end, tz, minutes = 60) {
+  const s = String(start).replace(' ', 'T');
+  const allDay = !parseLocal(s).hasTime;
+  const e = end == null ? null : String(end).replace(' ', 'T');
+  if (e && parseLocal(e).hasTime === allDay) throw new Error('start ו-end צריכים להיות שניהם תאריך, או שניהם תאריך ושעה');
+  if (allDay) {
+    if (e && e < s) throw new Error('end לפני start');
+    return { start: { date: s }, end: { date: nextDay(e ?? s) } };
+  }
+  const to = e ?? shift(s, minutes, tz);
+  if (localToUtc(to, tz) <= localToUtc(s, tz)) throw new Error('end צריך להיות אחרי start');
+  return { start: { dateTime: `${s}:00`, timeZone: tz }, end: { dateTime: `${to}:00`, timeZone: tz } };
 }
 
 const DAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
@@ -181,13 +181,6 @@ export function fromRRule(recurrence) {
   return rule;
 }
 
-const item = (db, kind, id) => (kind === 'reminder' ? db.reminder(id) : db.entry(id));
-
-function eventArgs(kind, it, tz) {
-  if (kind === 'reminder') return { summary: it.text, description: 'תזכורת מעוזר הבית', ...when(it.start_local, 15, tz) };
-  return { summary: `${it.done_at ? `${DONE} ` : ''}${it.text}`, description: `${it.list}: ${formatEntry(it).slice(2)}`, ...when(it.fields.due, 30, tz) };
-}
-
 // When a reminder at local `at` (repeating by `rule`) fires next; null when a one-time one has passed.
 function nextRun(at, rule, now, tz) {
   const first = localToUtc(at, tz);
@@ -195,27 +188,89 @@ function nextRun(at, rule, now, tz) {
   return nextOccurrence(rule, at, Math.max(first - 60_000, now), tz);
 }
 
-// ---- bot -> calendar
+// What Claude sees for one event. id = this event (one instance of a repeat); series_id = the whole repeating event.
+export function eventView(e, tz, links = []) {
+  const series = e.recurringEventId ?? e.id;
+  const linked = links.filter((l) => l.event_id === series).map((l) => `${l.kind} ${l.item_id}`);
+  const allDay = Boolean(e.start?.date);
+  return {
+    id: e.id, ...(e.recurringEventId ? { series_id: e.recurringEventId } : {}), title: e.summary ?? '',
+    start: eventTime(e.start, tz), end: allDay ? nextDay(eventTime(e.end, tz), -1) : eventTime(e.end, tz), all_day: allDay || undefined,
+    repeat: e.recurrence ? (fromRRule(e.recurrence) ?? e.recurrence.join(' ')) : e.recurringEventId ? 'חלק מסדרה' : undefined,
+    location: e.location || undefined, description: e.description ? e.description.slice(0, 300) : undefined,
+    linked: linked.length ? linked : undefined,
+  };
+}
 
-// Put a bot item in the calendar, or bring its event up to date. A family event (owner 'calendar') is never changed.
+// ---- any event: add, update, delete (bot items linked to it follow at once)
+
+export async function addEvent(db, cal, { title, start, end, location, description, repeat }) {
+  const ev = await cal.insert({
+    summary: title, ...(location ? { location } : {}), ...(description ? { description } : {}),
+    ...span(start, end, cal.tz), ...(repeat ? { recurrence: toRRule(repeat) } : {}),
+  });
+  return eventView(ev, cal.tz);
+}
+
+// Only the fields given change. A new start alone keeps the length. A repeat changes only on the whole series.
+export async function updateEvent(db, cal, { event_id, title, start, end, location, description, repeat, repeat_off }, now = Date.now()) {
+  const old = await cal.get(event_id);
+  if (!old || old.status === 'cancelled') throw new Error(`אין ביומן אירוע ${event_id}`);
+  const ev = { ...old };
+  if (title !== undefined) ev.summary = title;
+  if (location !== undefined) ev.location = location || undefined;
+  if (description !== undefined) ev.description = description || undefined;
+  if (start !== undefined || end !== undefined) {
+    const oldStart = eventTime(old.start, cal.tz);
+    const oldAllDay = Boolean(old.start.date);
+    const s = start ?? oldStart;
+    let e = end;
+    // Keep the length when only the start moves (and stays the same kind: all-day or with a time).
+    if (e === undefined && start !== undefined && parseLocal(s.replace(' ', 'T')).hasTime !== oldAllDay) {
+      e = oldAllDay
+        ? nextDay(s, (Date.parse(old.end.date) - Date.parse(old.start.date)) / 86_400_000 - 1)
+        : shift(s.replace(' ', 'T'), (Date.parse(old.end.dateTime) - Date.parse(old.start.dateTime)) / 60_000, cal.tz);
+    }
+    Object.assign(ev, span(s, e, cal.tz));
+  }
+  if (repeat || repeat_off) {
+    if (old.recurringEventId) throw new Error(`זה מופע אחד של אירוע חוזר. כדי לשנות את החזרה, ערוך את הסדרה: ${old.recurringEventId}`);
+    ev.recurrence = repeat_off ? undefined : toRRule(repeat);
+  }
+  const saved = await cal.update(event_id, ev);
+  await applyLinks(db, cal.tz, saved, now);
+  return eventView(saved, cal.tz);
+}
+
+export async function deleteEvent(db, cal, eventId, now = Date.now()) {
+  const old = await cal.get(eventId);
+  if (!old || old.status === 'cancelled') throw new Error(`אין ביומן אירוע ${eventId}`);
+  await cal.remove(eventId);
+  await applyLinks(db, cal.tz, { ...old, status: 'cancelled' }, now);
+  return { id: eventId, title: old.summary ?? '' };
+}
+
+// ---- bot item -> its own event
+
+const item = (db, kind, id) => (kind === 'reminder' ? db.reminder(id) : db.entry(id));
+
+function itemEvent(kind, it, tz) {
+  if (kind === 'reminder') return { summary: it.text, description: 'תזכורת מעוזר הבית', ...span(it.start_local, null, tz, 15), recurrence: toRRule(it.rule) };
+  return { summary: `${it.done_at ? `${DONE} ` : ''}${it.text}`, description: `${it.list}: ${formatEntry(it).slice(2)}`, ...span(it.fields.due, null, tz, 30) };
+}
+
+// Put a bot item in the calendar, or bring its event up to date. A family event the item follows (owner 'calendar')
+// is changed only with calendar_update.
 export async function pushItem(db, cal, kind, id) {
   const it = await item(db, kind, id);
   const link = await db.calendarLink(kind, id);
   if (!it || (kind === 'reminder' && !it.active)) throw new Error(`אין ${kind === 'reminder' ? 'תזכורת פעילה' : 'פריט'} ${id}`);
   if (link?.owner === 'calendar') return link;
   if (kind === 'entry' && !it.fields.due) throw new Error(`ל"${it.text}" אין מועד (due), אז אין לו מקום ביומן`);
-  const args = eventArgs(kind, it, cal.tz);
-  const rule = kind === 'reminder' ? it.rule : null;
+  const body = itemEvent(kind, it, cal.tz);
   const old = link ? await cal.get(link.event_id) : null;
-  let ev;
-  // update_event cannot change the repeat: an event whose repeat changed is made again.
-  if (old && old.status !== 'cancelled' && JSON.stringify(fromRRule(old.recurrence)) === JSON.stringify(rule)) {
-    ev = await cal.update(link.event_id, args);
-    if (!ev?.updated) ev = await cal.get(link.event_id);
-  } else {
-    if (old && old.status !== 'cancelled') await cal.remove(link.event_id);
-    ev = await cal.insert({ ...args, ...(rule ? { recurrenceData: toRRule(rule) } : {}) });
-  }
+  // Keep what the family added to the event (place, color...); the time, title and repeat are the bot's.
+  const ev = old && old.status !== 'cancelled' ? await cal.update(link.event_id, { ...old, ...body }) : await cal.insert(body);
   return db.linkCalendar({ kind, item_id: Number(id), event_id: ev.id, owner: 'bot', updated: ev.updated ?? null });
 }
 
@@ -237,7 +292,8 @@ export async function afterChange(db, cal, kind, ids) {
 
 // A family event -> a reminder in this chat (minutes_before; an all-day event counts from 09:00) or a list entry.
 export async function importEvent(db, cal, { event_id, as = 'reminder', minutes_before = 0, list }, { chatId, user, now }) {
-  const ev = await cal.get(event_id);
+  let ev = await cal.get(event_id);
+  if (ev?.recurringEventId) ev = await cal.get(ev.recurringEventId); // one instance of a repeat: follow the series
   if (!ev || ev.status === 'cancelled') throw new Error(`אין ביומן אירוע ${event_id}`);
   const start = eventTime(ev.start, cal.tz);
   const text = ev.summary?.trim() || 'אירוע ביומן';
@@ -256,32 +312,34 @@ export async function importEvent(db, cal, { event_id, as = 'reminder', minutes_
   return { kind, id };
 }
 
-// ---- calendar -> bot, on a tick. The MCP tools have no "changed since", so the linked events are read one by one:
-// up to PULL_MAX per tick, in turns.
+// ---- calendar -> bot
+
+// On every tick: the changes since the last poll (one request), applied to linked items.
 export async function pullCalendar(db, cal, now = Date.now()) {
-  const links = await db.calendarLinks();
-  const events = [...new Set(links.map((l) => l.event_id))].sort();
-  if (!events.length) return { applied: 0, errors: [] };
-  const from = (await db.get('calendar:cursor', 0)) % events.length;
-  const batch = [...events, ...events].slice(from, from + Math.min(PULL_MAX, events.length));
-  await db.set('calendar:cursor', from + batch.length);
+  if (!(await db.calendarLinks()).length) return { applied: 0, errors: [] };
+  const since = await db.get('calendar:polled', now - 10 * 60_000);
+  const changed = await cal.changedSince(since - 2 * 60_000); // overlap: clocks differ a little; seen changes are skipped
+  await db.set('calendar:polled', now);
   let applied = 0;
   const errors = [];
-  for (const eventId of batch) {
-    let ev;
+  for (const ev of changed) {
+    const r = await applyLinks(db, cal.tz, ev, now);
+    applied += r.applied;
+    errors.push(...r.errors);
+  }
+  return { applied, errors };
+}
+
+// One changed (or deleted) event -> the bot items linked to it, unless the bot already knows this version.
+async function applyLinks(db, tz, ev, now) {
+  let applied = 0;
+  const errors = [];
+  for (const link of (await db.calendarLinks()).filter((l) => l.event_id === ev.id && (ev.status === 'cancelled' || l.updated !== ev.updated))) {
     try {
-      ev = await cal.get(eventId);
+      await applyEvent(db, tz, link, ev, now);
+      applied++;
     } catch (err) {
-      errors.push(`${eventId}: ${err.message}`);
-      continue;
-    }
-    for (const link of links.filter((l) => l.event_id === eventId && (!ev || ev.status === 'cancelled' || l.updated !== ev.updated))) {
-      try {
-        await applyEvent(db, cal.tz, link, ev, now);
-        applied++;
-      } catch (err) {
-        errors.push(`${link.kind} ${link.item_id}: ${err.message}`);
-      }
+      errors.push(`${link.kind} ${link.item_id}: ${err.message}`);
     }
   }
   return { applied, errors };
@@ -289,7 +347,7 @@ export async function pullCalendar(db, cal, now = Date.now()) {
 
 async function applyEvent(db, tz, link, ev, now) {
   const it = await item(db, link.kind, link.item_id);
-  if (!it || !ev || ev.status === 'cancelled') {
+  if (!it || ev.status === 'cancelled') {
     // Deleted in the calendar: the reminder stops; an entry stays in its list, only unlinked.
     if (it && link.kind === 'reminder') await db.cancelReminders([link.item_id]);
     return db.unlinkCalendar(link.kind, link.item_id);

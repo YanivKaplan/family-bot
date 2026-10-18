@@ -1,7 +1,7 @@
 // The tools that Claude can call. Each tool changes only household data in the DB.
 import { localToUtc, parseLocal, formatHe, nextOccurrence, localDate } from './time.mjs';
 import { startOrder } from './order.mjs';
-import { pushItem, removeItem, afterChange, importEvent, eventTime } from './calendar.mjs';
+import { pushItem, removeItem, afterChange, importEvent, eventView, addEvent, updateEvent, deleteEvent } from './calendar.mjs';
 
 const ids = { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 };
 const REPEAT = {
@@ -147,12 +147,46 @@ export const TOOLS = [
   },
   {
     name: 'calendar_show',
-    description: 'האירועים ביומן גוגל המשפחתי בין שני תאריכים (עד 62 יום). לכל אירוע id, ו-linked אם תזכורת או פריט כבר מקושרים אליו.',
+    description: 'האירועים ביומן גוגל המשפחתי בין שני תאריכים (עד 62 יום), אפשר עם q לחיפוש טקסט. לכל אירוע id; אירוע חוזר מוצג כמופעים, ' +
+      'וב-series_id יש את הסדרה כולה. linked = תזכורות או פריטים שמקושרים אליו.',
     input_schema: {
       type: 'object',
-      properties: { from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD, ברירת מחדל = from' } },
+      properties: {
+        from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD, ברירת מחדל = from' },
+        q: { type: 'string', description: 'חיפוש בכותרת, תיאור ומקום' },
+      },
       required: ['from'],
     },
+  },
+  {
+    name: 'calendar_add',
+    description: 'אירוע חדש ביומן גוגל (פגישה, תור, אירוע משפחתי). start/end בזמן מקומי: YYYY-MM-DDTHH:MM, או YYYY-MM-DD ליום שלם (end כולל). ' +
+      'בלי end: שעה אחת, או יום אחד. repeat לאירוע חוזר. אם רוצים גם תזכורת בצ\'אט, אחר כך calendar_import.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' }, location: { type: 'string' }, description: { type: 'string' }, repeat: REPEAT,
+      },
+      required: ['title', 'start'],
+    },
+  },
+  {
+    name: 'calendar_update',
+    description: 'עריכת כל אירוע ביומן לפי event_id (id של מופע אחד, או series_id לכל הסדרה). שלח רק מה שמשתנה; start בלבד שומר על האורך. ' +
+      '"" מוחק מקום או תיאור. repeat / repeat_off רק על סדרה או אירוע רגיל. תזכורות ופריטים שמקושרים לאירוע מתעדכנים איתו.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_id: { type: 'string' }, title: { type: 'string' }, start: { type: 'string' }, end: { type: 'string' },
+        location: { type: 'string' }, description: { type: 'string' }, repeat: REPEAT, repeat_off: { type: 'boolean' },
+      },
+      required: ['event_id'],
+    },
+  },
+  {
+    name: 'calendar_delete',
+    description: 'מחיקת אירועים מהיומן לפי event_ids (מופע אחד או series_id לכל הסדרה). רק לבקשה מפורשת. תזכורות שמקושרות לאירוע מתבטלות.',
+    input_schema: { type: 'object', properties: { event_ids: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20 } }, required: ['event_ids'] },
   },
   {
     name: 'calendar_sync',
@@ -163,7 +197,7 @@ export const TOOLS = [
   {
     name: 'calendar_import',
     description: 'אירוע שכבר ביומן (id מ-calendar_show) → תזכורת בצ\'אט הזה (as=reminder; minutes_before = כמה דקות לפני, באירוע של יום שלם הבסיס הוא 09:00 באותו יום) ' +
-      'או פריט ברשימה (as=entry, list). הם עוקבים אחרי האירוע: הוא זז – הם זזים, הוא נמחק – התזכורת מתבטלת. הבוט לא משנה את האירוע עצמו. ' +
+      'או פריט ברשימה (as=entry, list). הם עוקבים אחרי האירוע: הוא זז – הם זזים, הוא נמחק – התזכורת מתבטלת. ביטול התזכורת לא מוחק את האירוע. ' +
       'אפשר כמה תזכורות לאותו אירוע (למשל יום לפני ושעה לפני).',
     input_schema: {
       type: 'object',
@@ -314,17 +348,23 @@ export async function runTool(name, input, ctx) {
     case 'calendar_show': {
       const cal = needCalendar(ctx);
       const links = await db.calendarLinks();
-      return {
-        events: (await cal.between(input.from, input.to ?? input.from)).map((e) => {
-          const id = e.recurringEventId ?? e.id;
-          const linked = links.filter((l) => l.event_id === id).map((l) => `${l.kind} ${l.item_id}`);
-          return {
-            id, title: e.summary ?? '', start: eventTime(e.start, tz), end: e.end?.dateTime ? eventTime(e.end, tz) : undefined,
-            all_day: Boolean(e.start?.date) || undefined, repeats: Boolean(e.recurringEventId || e.recurrence?.length) || undefined,
-            location: e.location || undefined, linked: linked.length ? linked : undefined,
-          };
-        }),
-      };
+      return { events: (await cal.between(input.from, input.to ?? input.from, input.q)).map((e) => eventView(e, tz, links)) };
+    }
+    case 'calendar_add':
+      return { added: await addEvent(db, needCalendar(ctx), input) };
+    case 'calendar_update':
+      return { updated: await updateEvent(db, needCalendar(ctx), input, now) };
+    case 'calendar_delete': {
+      const cal = needCalendar(ctx);
+      const deleted = [], failed = [];
+      for (const id of input.event_ids) {
+        try {
+          deleted.push(await deleteEvent(db, cal, id, now));
+        } catch (err) {
+          failed.push({ id, error: err.message });
+        }
+      }
+      return { deleted, ...(failed.length ? { failed } : {}) };
     }
     case 'calendar_sync': {
       const cal = needCalendar(ctx);

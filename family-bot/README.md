@@ -10,7 +10,7 @@ What it does:
 - **Household memory** – "בוט, תזכור שתקציב האוכל שלנו הוא 3,000 ₪". The bot uses these facts in later discussions.
 - **Discussions and advice** – planning a week, meals, an event, or how to manage the expenses better. Web search for current facts (opening hours, prices, holidays), with sources.
 - **Morning summary** – at 07:30, the tasks and reminders for today (only if there are some).
-- **Google Calendar (optional)** – on request, reminders and dated tasks go to the family calendar and stay synced both ways: "בוט, תזכיר לנו ביום שלישי ב-17:00 חוג שחייה, ותשים ביומן". Edit, close or cancel in the bot and the event follows; move, rename, delete or put ✅ at the start of the title in the calendar and the bot follows. The bot also reads the calendar ("מה יש ביומן השבוע?") and can remind you of an existing event ("תזכיר לנו שעה לפני רופא השיניים שביומן") without ever changing that event. Uses Google's official Calendar MCP server. See setup step 8.
+- **Google Calendar (optional)** – read, add, edit and delete any event in the family calendar ("מה יש ביומן השבוע?", "תוסיף ליומן תור לרופא שיניים ביום חמישי ב-16:00", "תזיז את יום ההולדת של סבתא לשבת", "תמחק את הפגישה עם הגנן"; for a repeating event, one occurrence or the whole series). On request, reminders and dated tasks go to the calendar and stay synced both ways: "בוט, תזכיר לנו ביום שלישי ב-17:00 חוג שחייה, ותשים ביומן". Edit, close or cancel in the bot and the event follows; move, rename, delete or put ✅ at the start of the title in the calendar and the bot follows within a minute. Reminders can follow an existing event ("תזכיר לנו שעה לפני רופא השיניים שביומן"). Google Calendar API v3. See setup step 8.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Family Telegram group ──webhook (secret header)──> Cloudflare Worker ─
                               cron, every minute ─────────┤
                                                           ├── Cloudflare D1 (SQLite): lists (one generic table),
                                                           │   reminders, places, memory, calendar links
-                                                          └── Google Calendar MCP server (optional, OAuth)
+                                                          └── Google Calendar API (optional, OAuth)
 ```
 
 - **Hosting: Cloudflare Workers, free plan.** No credit card. Telegram calls the bot, so nothing runs all the time. The cron trigger sends the reminders.
@@ -42,7 +42,7 @@ Only your family can use the bot:
 | Claude can only change household data. It cannot pay, send email or open apps. The one outside action is filling the Carrefour cart for a list the family confirmed (`order_start`): the shopper on the home machine (`../shopper`) stops before payment and never types card details. The prompt forbids saving card numbers, bank accounts, passwords and ID numbers in memory. | Damage from a wrong or manipulated answer |
 | `MAX_DAILY_CALLS` (300), max 8 model steps per message, max 3 web searches per message, and a spend limit on the Anthropic workspace. | Unexpected cost |
 | Replies are plain text (no Markdown/HTML). | Links or formatting injected through text |
-| Google Calendar (optional): the sign-in link comes only from `/calendar` in a private chat with a family member, works once, for 15 minutes. The bot writes only to events it made; family events it only reads. Event titles are data for the model, not instructions. | Linking a stranger's calendar; the bot changing your own events |
+| Google Calendar (optional): the sign-in link comes only from `/calendar` in a private chat with a family member, works once, for 15 minutes. The scope is `calendar.events` only (events, not sharing or other calendars' settings). Writes never email guests (`sendUpdates=none`). The prompt deletes only on an explicit request, and asks before deleting a series or several events. Event titles are data for the model, not instructions. | Linking a stranger's calendar; surprise deletes; invitations sent in your name |
 
 Privacy notes:
 - In the group, the bot receives all messages (this is necessary for the wake word "בוט" and for live location). It does not answer messages that are not for it. The last `GROUP_CONTEXT` (15) of them from the last 2 hours are kept, so the bot understands "בוט, תוסיף את זה". They go to Claude only together with a message for the bot. `GROUP_CONTEXT=0` turns this off: then the bot drops these messages.
@@ -112,14 +112,14 @@ The answer must be `{"ok":true,"result":true,"description":"Webhook was set"}`.
 3. Do the same for the supermarket, the post office and the pharmacy.
 
 ### 8. Google Calendar (optional)
-The bot talks to Google's official remote MCP server for Calendar (`https://calendarmcp.googleapis.com/mcp/v1`). It is in Google's **Developer Preview**: the Google account of the Cloud project must be in the [Google Workspace Developer Preview Program](https://developers.google.com/workspace/preview).
-1. In a Google Cloud project: `gcloud services enable calendar-json.googleapis.com calendarmcp.googleapis.com`.
-2. Google Auth Platform → consent screen: audience External (or Internal for Workspace), add the family Google account as a test user. Data Access: add `calendar.events`, `calendar.events.readonly`, `calendar.events.freebusy`, `calendar.calendarlist.readonly`.
-3. Clients → Create client → **Web application**, select **"Use this client for an AI-powered agent"**. Authorized redirect URI: `https://family-home-bot.<your-name>.workers.dev/google/callback`.
+The bot uses the Google Calendar API v3 with the family account's OAuth sign-in (free).
+1. In a Google Cloud project (console.cloud.google.com, free): APIs & Services → enable **Google Calendar API** (or `gcloud services enable calendar-json.googleapis.com`).
+2. Google Auth Platform → consent screen: audience External (or Internal for Workspace), add the family Google account as a test user. Data Access: add the scope `.../auth/calendar.events`.
+3. Clients → Create client → **Web application**. Authorized redirect URI: `https://family-home-bot.<your-name>.workers.dev/google/callback`.
 4. Add the secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`. Optional: `GOOGLE_CALENDAR_ID` = the family calendar's id (Calendar settings → Integrate calendar), default `primary`.
 5. A family member sends `/calendar` to the bot in a private chat, opens the link and signs in with the account of the family calendar. The bot writes "יומן גוגל מחובר" in that chat.
 
-Notes: with the consent screen in "Testing", Google expires the sign-in after 7 days; publish the app (no verification needed for your own account) or send `/calendar` again. The bot reads up to 20 linked events per minute, so a change in the calendar arrives within a minute or two.
+Notes: with the consent screen in "Testing", Google expires the sign-in after 7 days; publish the app (no verification needed for your own account) or send `/calendar` again. Google shows "Google hasn't verified this app" on sign-in: it is your own app, choose Continue. The bot asks Google once a minute for events that changed (only while something is synced), so a change in the calendar arrives within a minute or two.
 
 ## Use
 
@@ -180,7 +180,7 @@ Working with Claude Code: `CLAUDE.md` says every change ends with test, commit, 
 | `src/claude.mjs` | Claude Messages API: tool loop, web search, prompt caching |
 | `src/tools.mjs` | The tools that Claude can call: generic lists (`list_*`), reminders, places, memory |
 | `src/prompt.mjs` | The Hebrew system prompt |
-| `src/calendar.mjs` | Google Calendar: MCP client, sign-in, two-way sync of linked reminders and entries |
+| `src/calendar.mjs` | Google Calendar: API client, sign-in, event add/edit/delete, two-way sync of linked reminders and entries |
 | `src/db.mjs` | Tables and data functions (async) |
 | `src/d1.mjs`, `src/node-sqlite.mjs` | SQL back ends: Cloudflare D1, node:sqlite |
 | `src/time.mjs` | Time zone, repeating dates, distance |

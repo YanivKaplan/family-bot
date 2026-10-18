@@ -162,5 +162,5 @@ test('Google sign-in callback: 404 without the calendar, refuses an unknown stat
   assert.match(await res.text(), /שלחו \/calendar שוב/);
   const { Claude } = await import('../src/claude.mjs');
   assert.equal(new Claude({ apiKey: 'k', model: 'm' }).tools.some((t) => t.name.startsWith('calendar_')), false);
-  assert.equal(new Claude({ apiKey: 'k', model: 'm', calendar: true }).tools.filter((t) => t.name.startsWith('calendar_')).length, 3);
+  assert.equal(new Claude({ apiKey: 'k', model: 'm', calendar: true }).tools.filter((t) => t.name.startsWith('calendar_')).length, 6);
 });
