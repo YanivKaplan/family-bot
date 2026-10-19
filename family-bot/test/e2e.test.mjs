@@ -184,6 +184,50 @@ test('scheduler sends due reminders once and moves repeating ones', async () => 
   assert.equal((await db.activeReminders()).some((r) => r.text === 'להוציא פח'), false);
 });
 
+test('reminder buttons: done closes the task, snooze makes a one-time copy, no Claude call', async () => {
+  const now = localToUtc('2026-10-20T18:00', TZ);
+  const [task] = await db.addEntries([{ list: 'משימות', text: 'לקבוע תור לרופא' }], 'יניב');
+  const r = await db.addReminder({ chat_id: GROUP, text: 'לקבוע תור', start_local: '2026-10-20T18:00', next_at: now, rule: { freq: 'daily' }, task_id: task.id }, 'יניב');
+  reset();
+  await bot.tick(now + 1000);
+  const sent = sends().find((s) => s.body.text.startsWith('⏰'));
+  assert.deepEqual(sent.body.reply_markup.inline_keyboard[0].map((b) => b.callback_data), [`r:${r.id}:done`, `r:${r.id}:h1`, `r:${r.id}:d1`]);
+
+  let uid = 7000;
+  const click = (data, from = DAD) => bot.handle({ update_id: ++uid, callback_query: {
+    id: `q${uid}`, data, from: { id: from, first_name: from === DAD ? 'יניב' : 'זר' },
+    message: { message_id: 55, chat: { id: GROUP, type: 'group' }, text: sent.body.text },
+  } });
+  const calls = (m) => tgCalls.filter((c) => c.method === m);
+  const realNow = Date.now;
+  Date.now = () => now + 60_000;
+  try {
+    reset();
+    await click(`r:${r.id}:h1`);
+    await click(`r:${r.id}:d1`);
+    const copies = (await db.activeReminders()).filter((x) => x.text === 'לקבוע תור' && x.id !== r.id).map((x) => x.next_at).sort();
+    assert.deepEqual(copies, [now + 60_000 + 3600_000, localToUtc('2026-10-21T18:01', TZ)]);
+    assert.equal(calls('editMessageText').length, 2);
+    assert.match(calls('editMessageText')[0].body.text, /⏰ נדחה ל.* ע"י יניב$/);
+    assert.equal(calls('editMessageText')[0].body.reply_markup, undefined);
+
+    reset();
+    await click(`r:${r.id}:done`, STRANGER);
+    assert.equal((await db.entry(task.id)).done_at, null);
+    assert.equal(calls('editMessageText').length, 0);
+    assert.equal(calls('answerCallbackQuery').length, 1);
+
+    await click(`r:${r.id}:done`);
+    assert.ok((await db.entry(task.id)).done_at);
+    assert.equal((await db.activeReminders()).some((x) => x.task_id === task.id), false);
+    assert.match(calls('editMessageText')[0].body.text, /✅ בוצע ע"י יניב$/);
+    assert.equal(calls('answerCallbackQuery').length, 2);
+    assert.equal(claudeReqs.length, 0);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test('morning digest once per day', async () => {
   await db.addEntries([{ list: 'משימות', text: 'לשלם ארנונה', fields: { due: '2026-10-19T12:00' } }], 'יניב');
   reset();

@@ -91,7 +91,7 @@ npx wrangler secret put WEBHOOK_SECRET
 Open this address in a browser (put in your token, Worker address and secret):
 
 ```
-https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://family-home-bot.<your-name>.workers.dev/telegram&secret_token=<WEBHOOK_SECRET>&allowed_updates=["message","edited_message","my_chat_member"]&drop_pending_updates=true
+https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://family-home-bot.<your-name>.workers.dev/telegram&secret_token=<WEBHOOK_SECRET>&allowed_updates=["message","edited_message","my_chat_member","callback_query"]&drop_pending_updates=true
 ```
 
 The answer must be `{"ok":true,"result":true,"description":"Webhook was set"}`.

@@ -2,8 +2,8 @@
 // Runs the same on Cloudflare Workers (webhook + cron) and on Node (long polling).
 import { Claude } from './claude.mjs';
 import { contextBlock } from './prompt.mjs';
-import { HELP, formatLists, formatReminders, formatDigest } from './format.mjs';
-import { localDate, localParts, nextOccurrence, distanceM, formatHe } from './time.mjs';
+import { HELP, formatLists, formatReminders, formatDigest, reminderButtons } from './format.mjs';
+import { localDate, localDateTime, localParts, zonedToUtc, nextOccurrence, distanceM, formatHe } from './time.mjs';
 import { GoogleCalendar, pullCalendar, connectLink, isConnected } from './calendar.mjs';
 
 const LOCATION_TTL_MS = 30 * 60_000;
@@ -39,6 +39,7 @@ export class FamilyBot {
   async handle(update) {
     await this.identity();
     if (update.my_chat_member) return this.onMembership(update.my_chat_member);
+    if (update.callback_query) return this.onButton(update.callback_query);
     const msg = update.message ?? update.edited_message;
     if (!msg || !msg.chat || msg.from?.is_bot) return;
     const isEdit = Boolean(update.edited_message);
@@ -181,6 +182,32 @@ export class FamilyBot {
     await this.tg.send(chatId, reply, { replyTo: systemNote ? undefined : msg.message_id });
   }
 
+  // ---- buttons under a reminder: done / in an hour / tomorrow. No Claude call.
+  async onButton(q) {
+    const { db, cfg } = this;
+    const msg = q.message;
+    if (!msg?.chat || !this.isAllowed(msg.chat, q.from)) return this.tg.answerCallback(q.id);
+    const m = /^r:(\d+):(done|h1|d1)$/.exec(q.data ?? '');
+    const r = m && await db.reminder(m[1]);
+    if (!r || r.chat_id !== msg.chat.id) return this.tg.answerCallback(q.id, 'התזכורת הזו כבר לא קיימת');
+    const user = q.from.first_name ?? 'מישהו';
+    let line;
+    if (m[2] === 'done') {
+      // A task's reminder closes the task (and its other reminders). Otherwise it is only a "seen".
+      if (r.task_id && await db.entry(r.task_id)) await db.updateEntry(r.task_id, { done: true }, user);
+      line = `✅ בוצע ע"י ${user}`;
+    } else {
+      // Snooze = a new one-time copy; a repeating reminder keeps its rule and its calendar link.
+      const now = Date.now();
+      const p = localParts(new Date(now), cfg.tz);
+      const at = m[2] === 'h1' ? now + 3600_000 : zonedToUtc({ ...p, d: p.d + 1 }, cfg.tz);
+      await db.addReminder({ chat_id: r.chat_id, text: r.text, start_local: localDateTime(new Date(at), cfg.tz), next_at: at, rule: null, task_id: r.task_id }, user, now);
+      line = `⏰ נדחה ל${formatHe(at, cfg.tz)} ע"י ${user}`;
+    }
+    await this.tg.editText(msg.chat.id, msg.message_id, `${msg.text ?? ''}\n${line}`);
+    return this.tg.answerCallback(q.id);
+  }
+
   // ---- locations
   async onLocation(msg, isEdit) {
     const { db, cfg } = this;
@@ -228,7 +255,7 @@ export class FamilyBot {
       if (entry?.done_at) continue;
       const late = now - r.next_at > 15 * 60_000 ? ` (באיחור, היה ל-${formatHe(r.next_at, cfg.tz)})` : '';
       try {
-        await this.tg.send(r.chat_id, `⏰ תזכורת: ${r.text}${late}`);
+        await this.tg.send(r.chat_id, `⏰ תזכורת: ${r.text}${late}`, { buttons: reminderButtons(r.id) });
       } catch (err) {
         this.log.error?.('reminder send failed', r.id, err.message);
       }

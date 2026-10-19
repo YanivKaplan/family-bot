@@ -57,6 +57,8 @@ export async function createHarness({ env = localEnv(), dbPath = ':memory:', sta
     getMe: async () => ({ id: 500, username: 'home_helper_bot', is_bot: true }),
     send: async (chatId, text, opts = {}) => { sent.push({ chatId, text, ...opts }); return { message_id: 10_000 + sent.length }; },
     typing: async () => {},
+    editText: async () => {},
+    answerCallback: async () => {},
     leave: async () => {},
     setCommands: async () => {},
   };

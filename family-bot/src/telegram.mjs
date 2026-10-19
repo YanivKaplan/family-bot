@@ -26,12 +26,13 @@ export class Telegram {
 
   getUpdates(offset, timeout = 50) {
     return this.call('getUpdates', {
-      offset, timeout, allowed_updates: ['message', 'edited_message', 'my_chat_member'],
+      offset, timeout, allowed_updates: ['message', 'edited_message', 'my_chat_member', 'callback_query'],
     }, (timeout + 15) * 1000);
   }
 
   // Plain text (no parse_mode): text from users or the model cannot inject markup.
-  async send(chatId, text, { replyTo } = {}) {
+  // buttons: inline keyboard rows, attached to the last chunk.
+  async send(chatId, text, { replyTo, buttons } = {}) {
     const chunks = [];
     for (let s = String(text); s.length; s = s.slice(4000)) chunks.push(s.slice(0, 4000));
     let last;
@@ -39,10 +40,18 @@ export class Telegram {
       last = await this.call('sendMessage', {
         chat_id: chatId, text: chunk, disable_web_page_preview: true,
         ...(replyTo && i === 0 ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } } : {}),
+        ...(buttons && i === chunks.length - 1 ? { reply_markup: { inline_keyboard: buttons } } : {}),
       });
     }
     return last;
   }
+
+  // New text without reply_markup, so the buttons go away.
+  editText(chatId, messageId, text) {
+    return this.call('editMessageText', { chat_id: chatId, message_id: messageId, text: String(text).slice(0, 4000), disable_web_page_preview: true }).catch(() => {});
+  }
+
+  answerCallback(id, text) { return this.call('answerCallbackQuery', { callback_query_id: id, ...(text ? { text } : {}) }).catch(() => {}); }
 
   typing(chatId) { return this.call('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {}); }
 

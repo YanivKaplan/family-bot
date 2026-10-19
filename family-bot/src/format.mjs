@@ -24,6 +24,13 @@ export const HELP = `שלום! אני עוזר הבית 🏠
 
 פקודות: /list כל הרשימות, /reminders תזכורות, /calendar חיבור יומן גוגל`;
 
+// Buttons under a fired reminder. callback_data is "r:<id>:<action>" (Telegram allows 64 bytes).
+export const reminderButtons = (id) => [[
+  { text: '✅ בוצע', callback_data: `r:${id}:done` },
+  { text: '⏰ עוד שעה', callback_data: `r:${id}:h1` },
+  { text: '📅 מחר', callback_data: `r:${id}:d1` },
+]];
+
 // Any list. Known fields get a short form; any other field is shown as "key: value".
 const SHORT = new Set(['qty', 'note', 'assignee', 'due', 'places']);
 export function formatEntry(e, today) {
