@@ -20,6 +20,12 @@ const SCHEMA = [
   // Google Calendar: one event per reminder or entry (src/calendar.mjs). An event can have more than one reminder.
   `CREATE TABLE IF NOT EXISTS calendar_links (kind TEXT NOT NULL, item_id INTEGER NOT NULL, event_id TEXT NOT NULL, owner TEXT NOT NULL, offset_min INTEGER NOT NULL DEFAULT 0, updated TEXT, PRIMARY KEY (kind, item_id))`,
 ];
+// Columns added after a table was created. init() adds the missing ones (SQLite has no ADD COLUMN IF NOT EXISTS).
+// reminders: list = show that list's open entries when it fires; offer_order = with a Carrefour button;
+// after_id = waits until that reminder is done; done_at = marked done; fired_at = last sent.
+const COLUMNS = {
+  reminders: ['list TEXT', 'offer_order INTEGER NOT NULL DEFAULT 0', 'after_id INTEGER', 'done_at INTEGER', 'fired_at INTEGER'],
+};
 
 const MAX_TEXT = 300;
 const clean = (v, field, max = MAX_TEXT) => {
@@ -45,12 +51,20 @@ function cleanFields(f) {
   return out;
 }
 const withFields = (r) => (r ? { ...r, fields: JSON.parse(r.fields || '{}') } : null);
+// waiting = 1 while the reminder it waits for (after_id) is not done yet.
+const REMINDER = `SELECT r.*, (a.id IS NOT NULL AND a.done_at IS NULL) AS waiting FROM reminders r LEFT JOIN reminders a ON a.id = r.after_id`;
 const withRule = (r) => (r ? { ...r, rule: r.rule ? JSON.parse(r.rule) : null } : null);
 
 export class HouseDB {
   constructor(sql) { this.sql = sql; }
 
-  async init() { await this.sql.init(SCHEMA); }
+  async init() {
+    await this.sql.init(SCHEMA);
+    for (const [table, cols] of Object.entries(COLUMNS)) {
+      const have = new Set((await this.sql.all(`PRAGMA table_info(${table})`)).map((c) => c.name));
+      for (const c of cols) if (!have.has(c.split(' ')[0])) await this.sql.run(`ALTER TABLE ${table} ADD COLUMN ${c}`);
+    }
+  }
 
   // ---- key/value (usage counters, last location, digest date)
   async get(k, fallback = null) {
@@ -117,7 +131,8 @@ export class HouseDB {
       list !== undefined ? clean(list, 'list', 40) : e.list, text !== undefined ? clean(text, 'text', 200) : e.text,
       JSON.stringify(merged), doneAt, doneAt ? (done === true && !e.done_at ? by : e.done_by) : null, e.id,
     ]);
-    if (doneAt) await this.sql.run('UPDATE reminders SET active = 0 WHERE task_id = ?', [e.id]); // its reminders stop
+    // its reminders stop, and count as done for reminders that wait for them
+    if (doneAt) await this.sql.run('UPDATE reminders SET active = 0, done_at = COALESCE(done_at, ?) WHERE task_id = ?', [doneAt, e.id]);
     return this.entry(e.id);
   }
 
@@ -126,6 +141,7 @@ export class HouseDB {
     for (const id of ids.map(Number)) {
       if ((await this.sql.run('DELETE FROM entries WHERE id = ?', [id])).changes > 0) {
         out.push(id);
+        await this.sql.run('UPDATE reminders SET after_id = NULL WHERE after_id IN (SELECT id FROM reminders WHERE task_id = ?)', [id]);
         await this.sql.run('UPDATE reminders SET active = 0 WHERE task_id = ?', [id]);
       }
     }
@@ -140,46 +156,85 @@ export class HouseDB {
   async deleteList(list) { return (await this.sql.run('DELETE FROM entries WHERE list = ?', [clean(list, 'list', 40)])).changes; }
 
   // ---- reminders
-  async addReminder({ chat_id, text, start_local, next_at, rule, task_id }, by, now = Date.now()) {
+  async addReminder({ chat_id, text, start_local, next_at, rule, task_id, list, offer_order, after_id }, by, now = Date.now()) {
     const { n } = await this.sql.get('SELECT COUNT(*) AS n FROM reminders WHERE active = 1');
     if (n >= 300) throw new Error('יש כבר 300 תזכורות פעילות');
+    if (after_id != null) await this.checkAfter(null, after_id);
     const r = await this.sql.run(
-      'INSERT INTO reminders (chat_id, text, start_local, next_at, rule, task_id, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [chat_id, clean(text, 'text', 300), start_local, next_at, rule ? JSON.stringify(rule) : null, task_id ?? null, by, now],
+      'INSERT INTO reminders (chat_id, text, start_local, next_at, rule, task_id, created_by, created_at, list, offer_order, after_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [chat_id, clean(text, 'text', 300), start_local, next_at, rule ? JSON.stringify(rule) : null, task_id ?? null, by, now,
+        list ? clean(list, 'list', 40) : null, offer_order ? 1 : 0, after_id ?? null],
     );
     return this.reminder(r.lastId);
   }
 
-  async reminder(id) { return withRule(await this.sql.get('SELECT * FROM reminders WHERE id = ?', [Number(id)])); }
+  // A reminder can wait for another one, but not (through a chain) for itself.
+  async checkAfter(id, afterId) {
+    let cur = await this.reminder(afterId);
+    if (!cur) throw new Error(`אין תזכורת ${afterId}`);
+    if (!cur.active && !cur.done_at && !cur.fired_at) throw new Error(`תזכורת ${afterId} בוטלה`);
+    for (let i = 0; cur && i < 50; i++, cur = cur.after_id ? await this.reminder(cur.after_id) : null) {
+      if (id != null && cur.id === Number(id)) throw new Error('תזכורת לא יכולה לחכות לעצמה');
+    }
+  }
 
-  async activeReminders() { return (await this.sql.all('SELECT * FROM reminders WHERE active = 1 ORDER BY next_at')).map(withRule); }
+  async reminder(id) { return withRule(await this.sql.get(`${REMINDER} WHERE r.id = ?`, [Number(id)])); }
 
+  async activeReminders() { return (await this.sql.all(`${REMINDER} WHERE r.active = 1 ORDER BY r.next_at`)).map(withRule); }
+
+  // A waiting reminder is not due: it keeps its time and goes out on the first tick after the one it waits for is done.
   async dueReminders(now = Date.now()) {
-    return (await this.sql.all('SELECT * FROM reminders WHERE active = 1 AND next_at <= ? ORDER BY next_at LIMIT 20', [now])).map(withRule);
+    return (await this.sql.all(`SELECT * FROM reminders r WHERE active = 1 AND next_at <= ?
+      AND NOT EXISTS (SELECT 1 FROM reminders a WHERE a.id = r.after_id AND a.done_at IS NULL) ORDER BY next_at LIMIT 20`, [now])).map(withRule);
+  }
+
+  // Reminders sent since `since`, also one-time ones that are no longer active.
+  async firedReminders(since) {
+    return (await this.sql.all(`${REMINDER} WHERE r.fired_at >= ? ORDER BY r.fired_at DESC LIMIT 50`, [since])).map(withRule);
   }
 
   // Move a fired reminder forward, or switch it off. Called before the send, so a crash never repeats it.
-  async advanceReminder(id, nextAt) {
-    if (nextAt) await this.sql.run('UPDATE reminders SET next_at = ? WHERE id = ?', [nextAt, id]);
-    else await this.sql.run('UPDATE reminders SET active = 0 WHERE id = ?', [id]);
+  async advanceReminder(id, nextAt, now = Date.now()) {
+    if (nextAt) await this.sql.run('UPDATE reminders SET next_at = ?, fired_at = ? WHERE id = ?', [nextAt, now, id]);
+    else await this.sql.run('UPDATE reminders SET active = 0, fired_at = ? WHERE id = ?', [now, id]);
   }
 
+  // ✅ on a reminder (button or tool). A one-time reminder also stops. Reminders that wait for it go out.
+  async markReminderDone(id, now = Date.now()) {
+    const r = await this.reminder(id);
+    if (!r) throw new Error(`אין תזכורת ${id}`);
+    await this.sql.run('UPDATE reminders SET done_at = COALESCE(done_at, ?), active = CASE WHEN rule IS NULL THEN 0 ELSE active END WHERE id = ?', [now, r.id]);
+    return this.reminder(r.id);
+  }
+
+  // A snoozed copy takes over: reminders that waited for the original now wait for the copy.
+  async moveWaiters(fromId, toId) { await this.sql.run('UPDATE reminders SET after_id = ? WHERE after_id = ?', [toId, fromId]); }
+
   // active (true/false) is set only by the calendar sync: an event moved to the future turns a fired reminder on again.
-  async updateReminder(id, { text, start_local, next_at, rule, active }) {
+  // list / after_id: undefined = keep, null = remove.
+  async updateReminder(id, { text, start_local, next_at, rule, active, list, offer_order, after_id }) {
     const r = await this.reminder(id);
     if (!r || (!r.active && active == null)) throw new Error(`אין תזכורת פעילה ${id}`);
-    await this.sql.run('UPDATE reminders SET text=?, start_local=?, next_at=?, rule=?, active=? WHERE id=?', [
+    if (after_id != null) await this.checkAfter(r.id, after_id);
+    await this.sql.run('UPDATE reminders SET text=?, start_local=?, next_at=?, rule=?, active=?, list=?, offer_order=?, after_id=? WHERE id=?', [
       text !== undefined ? clean(text, 'text', 300) : r.text, start_local ?? r.start_local, next_at ?? r.next_at,
       rule !== undefined ? (rule ? JSON.stringify(rule) : null) : (r.rule ? JSON.stringify(r.rule) : null),
-      active == null ? r.active : active ? 1 : 0, r.id,
+      active == null ? r.active : active ? 1 : 0,
+      list !== undefined ? (list ? clean(list, 'list', 40) : null) : r.list,
+      offer_order !== undefined ? (offer_order ? 1 : 0) : r.offer_order,
+      after_id !== undefined ? after_id : r.after_id, r.id,
     ]);
     return this.reminder(id);
   }
 
+  // A cancelled reminder never gets done, so the ones waiting for it stop waiting.
   async cancelReminders(ids) {
     const out = [];
     for (const id of ids.map(Number)) {
-      if ((await this.sql.run('UPDATE reminders SET active = 0 WHERE id = ? AND active = 1', [id])).changes > 0) out.push(id);
+      if ((await this.sql.run('UPDATE reminders SET active = 0 WHERE id = ? AND active = 1', [id])).changes > 0) {
+        out.push(id);
+        await this.sql.run('UPDATE reminders SET after_id = NULL WHERE after_id = ?', [id]);
+      }
     }
     return out;
   }

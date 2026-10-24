@@ -2,7 +2,8 @@
 // Runs the same on Cloudflare Workers (webhook + cron) and on Node (long polling).
 import { Claude } from './claude.mjs';
 import { contextBlock } from './prompt.mjs';
-import { HELP, formatLists, formatReminders, formatDigest, reminderButtons } from './format.mjs';
+import { HELP, formatLists, formatReminders, formatDigest, formatReminderList, reminderButtons } from './format.mjs';
+import { startOrder } from './order.mjs';
 import { localDate, localDateTime, localParts, zonedToUtc, nextOccurrence, distanceM, formatHe } from './time.mjs';
 import { GoogleCalendar, pullCalendar, connectLink, isConnected } from './calendar.mjs';
 
@@ -182,26 +183,41 @@ export class FamilyBot {
     await this.tg.send(chatId, reply, { replyTo: systemNote ? undefined : msg.message_id });
   }
 
-  // ---- buttons under a reminder: done / in an hour / tomorrow. No Claude call.
+  // ---- buttons under a reminder: done / in an hour / tomorrow / fill the Carrefour cart. No Claude call.
   async onButton(q) {
     const { db, cfg } = this;
     const msg = q.message;
     if (!msg?.chat || !this.isAllowed(msg.chat, q.from)) return this.tg.answerCallback(q.id);
-    const m = /^r:(\d+):(done|h1|d1)$/.exec(q.data ?? '');
+    const m = /^r:(\d+):(done|h1|d1|order)$/.exec(q.data ?? '');
     const r = m && await db.reminder(m[1]);
     if (!r || r.chat_id !== msg.chat.id) return this.tg.answerCallback(q.id, 'התזכורת הזו כבר לא קיימת');
     const user = q.from.first_name ?? 'מישהו';
+    const now = Date.now();
     let line;
     if (m[2] === 'done') {
-      // A task's reminder closes the task (and its other reminders). Otherwise it is only a "seen".
-      if (r.task_id && await db.entry(r.task_id)) await db.updateEntry(r.task_id, { done: true }, user);
+      // A task's reminder closes the task (and its other reminders). Reminders that wait for this one go out.
+      if (r.task_id && await db.entry(r.task_id)) await db.updateEntry(r.task_id, { done: true }, user, now);
+      await db.markReminderDone(r.id, now);
       line = `✅ בוצע ע"י ${user}`;
+    } else if (m[2] === 'order') {
+      // The button under the list is the confirmation: the open entries of that list go to the shopper as they are now.
+      if (!cfg.shopperSecret || !r.list) return this.tg.answerCallback(q.id, 'הזמנה אונליין לא מוגדרת');
+      let job;
+      try {
+        job = await startOrder(db, { chatId: r.chat_id, by: user, entries: await db.entries({ list: r.list }) }, now);
+      } catch (err) {
+        return this.tg.answerCallback(q.id, err.message);
+      }
+      line = `🛒 ${user} שלח/ה ${job.items.length} פריטים מ${r.list} לרובוט של קרפור. הוא יכתוב כאן כשהסל מוכן.`;
     } else {
       // Snooze = a new one-time copy; a repeating reminder keeps its rule and its calendar link.
-      const now = Date.now();
       const p = localParts(new Date(now), cfg.tz);
       const at = m[2] === 'h1' ? now + 3600_000 : zonedToUtc({ ...p, d: p.d + 1 }, cfg.tz);
-      await db.addReminder({ chat_id: r.chat_id, text: r.text, start_local: localDateTime(new Date(at), cfg.tz), next_at: at, rule: null, task_id: r.task_id }, user, now);
+      const copy = await db.addReminder({
+        chat_id: r.chat_id, text: r.text, start_local: localDateTime(new Date(at), cfg.tz), next_at: at, rule: null, task_id: r.task_id,
+        list: r.list, offer_order: r.offer_order,
+      }, user, now);
+      if (!r.rule) await db.moveWaiters(r.id, copy.id);
       line = `⏰ נדחה ל${formatHe(at, cfg.tz)} ע"י ${user}`;
     }
     await this.tg.editText(msg.chat.id, msg.message_id, `${msg.text ?? ''}\n${line}`);
@@ -250,12 +266,16 @@ export class FamilyBot {
     for (const r of await db.dueReminders(now)) {
       // Move the reminder forward before the send, so a crash never sends it twice.
       const next = r.rule ? nextOccurrence(r.rule, r.start_local, now, cfg.tz) : null;
-      await db.advanceReminder(r.id, next);
+      await db.advanceReminder(r.id, next, now);
       const entry = r.task_id ? await db.entry(r.task_id) : null;
       if (entry?.done_at) continue;
       const late = now - r.next_at > 15 * 60_000 ? ` (באיחור, היה ל-${formatHe(r.next_at, cfg.tz)})` : '';
+      // A reminder with a list shows that list as it is now, not as it was when the reminder was set.
+      const listed = r.list ? await db.entries({ list: r.list }) : [];
+      const text = `⏰ תזכורת: ${r.text}${late}` + (r.list ? `\n\n${formatReminderList(r.list, listed, localDate(new Date(now), cfg.tz))}` : '');
+      const order = Boolean(r.offer_order && cfg.shopperSecret && listed.length);
       try {
-        await this.tg.send(r.chat_id, `⏰ תזכורת: ${r.text}${late}`, { buttons: reminderButtons(r.id) });
+        await this.tg.send(r.chat_id, text, { buttons: reminderButtons(r.id, { order }) });
       } catch (err) {
         this.log.error?.('reminder send failed', r.id, err.message);
       }

@@ -208,3 +208,33 @@ test('/list shows every list without Claude', { skip }, async () => {
   assert.equal(r.usage, null);
   assert.match(r.reply, /📋 .*מתנ/);
 });
+
+test('A weekly shopping reminder that shows the list when it fires and offers Carrefour', { skip }, async () => {
+  h.setTime('2026-10-24T14:00');
+  const r = await say('בוט, תזכיר כל יום ראשון ב-20:00 לעשות קניות. כשהתזכורת נשלחת, תפרט בה את רשימת הקניות שהצטברה ותציע למלא סל בקרפור');
+  const rem = (await h.state()).reminders.find((x) => /קני/.test(x.text));
+  assert.ok(rem, `reminder saved: ${r.reply}`);
+  assert.equal(rem.list, 'סופר');
+  assert.equal(rem.offer_order, 1);
+  assert.equal(rem.rule?.freq, 'weekly');
+  assert.doesNotMatch(r.reply, /לא (יכול|ניתן|אפשר)/, 'no "cannot"');
+});
+
+test('A reminder that waits for another one', { skip }, async () => {
+  await say('בוט, תזכיר לנו ב-1.11 ב-7 בבוקר להירשם לערכת לידה, ורק אחרי שנרשמנו תזכיר ב-2.11 ב-18:00 לאסוף אותה', { as: 'מיכל' });
+  const rs = (await h.state()).reminders;
+  const first = rs.find((x) => /להירשם|הרשמה/.test(x.text));
+  const second = rs.find((x) => /לאסוף|איסוף/.test(x.text));
+  assert.ok(first && second, `both saved: ${rs.map((x) => x.text).join(' | ')}`);
+  assert.equal(second.after_id, first.id);
+});
+
+test('A reminder that already went off can still be found and marked done', { skip }, async () => {
+  const [first] = (await h.state()).reminders.filter((x) => /להירשם|הרשמה/.test(x.text));
+  h.setTime('2026-11-01T07:00');
+  await h.tick();
+  h.setTime('2026-11-01T10:00');
+  await say('בוט, נרשמנו לערכת לידה', { as: 'מיכל' });
+  assert.ok((await h.db.reminder(first.id)).done_at, 'marked done');
+  assert.equal((await h.state()).reminders.find((x) => /לאסוף|איסוף/.test(x.text))?.waiting, 0, 'the pickup reminder no longer waits');
+});

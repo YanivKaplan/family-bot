@@ -25,11 +25,22 @@ export const HELP = `שלום! אני עוזר הבית 🏠
 פקודות: /list כל הרשימות, /reminders תזכורות, /calendar חיבור יומן גוגל`;
 
 // Buttons under a fired reminder. callback_data is "r:<id>:<action>" (Telegram allows 64 bytes).
-export const reminderButtons = (id) => [[
-  { text: '✅ בוצע', callback_data: `r:${id}:done` },
-  { text: '⏰ עוד שעה', callback_data: `r:${id}:h1` },
-  { text: '📅 מחר', callback_data: `r:${id}:d1` },
-]];
+// order: a second row that sends the reminder's list to the Carrefour shopper.
+export const reminderButtons = (id, { order = false } = {}) => [
+  [
+    { text: '✅ בוצע', callback_data: `r:${id}:done` },
+    { text: '⏰ עוד שעה', callback_data: `r:${id}:h1` },
+    { text: '📅 מחר', callback_data: `r:${id}:d1` },
+  ],
+  ...(order ? [[{ text: '🛒 למלא סל בקרפור', callback_data: `r:${id}:order` }]] : []),
+];
+
+// The open entries of a list, for a reminder that shows its list. Long lists are cut (Telegram allows 4096 characters).
+export function formatReminderList(list, entries, today, max = 60) {
+  if (!entries.length) return `📋 ${list}: ריקה`;
+  const more = entries.length > max ? `\nועוד ${entries.length - max}` : '';
+  return `📋 ${list}:\n${entries.slice(0, max).map((e) => formatEntry(e, today)).join('\n')}${more}`;
+}
 
 // Any list. Known fields get a short form; any other field is shown as "key: value".
 const SHORT = new Set(['qty', 'note', 'assignee', 'due', 'places']);
@@ -59,14 +70,16 @@ export function formatLists(entries, tz, now = Date.now()) {
 export function formatReminders(rs, tz) {
   if (!rs.length) return 'אין תזכורות פעילות.';
   const rep = { daily: 'כל יום', weekly: 'כל שבוע', monthly: 'כל חודש', yearly: 'כל שנה' };
-  return '⏰ תזכורות:\n' + rs.map((r) => `• ${r.text} – ${formatHe(r.next_at, tz)}${r.rule ? ` (${rep[r.rule.freq] ?? 'חוזרת'})` : ''}`).join('\n');
+  return '⏰ תזכורות:\n' + rs.map((r) => `• ${r.text} – ${formatHe(r.next_at, tz)}${r.rule ? ` (${rep[r.rule.freq] ?? 'חוזרת'})` : ''}` +
+    `${r.list ? ` + רשימת ${r.list}` : ''}${r.waiting ? ' (מחכה שתזכורת קודמת תבוצע)' : ''}`).join('\n');
 }
 
 // Morning summary: list entries due today or overdue, reminders today, and the open count.
+// A reminder that waits for another one is left out until that one is done.
 export function formatDigest({ entries, reminders }, tz, now = Date.now()) {
   const today = localDate(new Date(now), tz);
   const dueToday = entries.filter((e) => e.fields?.due && e.fields.due.slice(0, 10) <= today);
-  const remToday = reminders.filter((r) => localDate(new Date(r.next_at), tz) === today);
+  const remToday = reminders.filter((r) => !r.waiting && localDate(new Date(r.next_at), tz) === today);
   if (!dueToday.length && !remToday.length) return null;
   const lines = ['☀️ בוקר טוב! להיום:'];
   for (const e of dueToday) lines.push(`• ${e.text}${e.fields.assignee ? ` (${e.fields.assignee})` : ''}${e.fields.due.slice(0, 10) < today ? ' ⚠️ באיחור' : ''}`);

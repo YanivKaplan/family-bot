@@ -13,6 +13,11 @@ const REPEAT = {
   },
   required: ['freq'],
 };
+const REMINDER_EXTRAS = {
+  list: { type: 'string', description: 'שם רשימה: כשהתזכורת נשלחת מצורפים אליה הפריטים הפתוחים ברשימה באותו רגע' },
+  offer_order: { type: 'boolean', description: 'עם list של קניות: כפתור "למלא סל בקרפור" מתחת לתזכורת' },
+  after_id: { type: 'integer', description: 'id של תזכורת אחרת: זו מחכה עד שהיא מסומנת בוצע (לא נשלחת ולא בסיכום הבוקר עד אז)' },
+};
 
 export const TOOLS = [
   {
@@ -64,30 +69,34 @@ export const TOOLS = [
   },
   {
     name: 'reminder_add',
-    description: 'תזכורת שתישלח לצ\'אט הזה בזמן מסוים. repeat לתזכורת חוזרת: freq daily/weekly/monthly/yearly, interval (כל כמה), days לשבועי (0=ראשון ... 6=שבת). entry_id לקשר לפריט ברשימה (התזכורת נעצרת כשהוא נסגר).',
+    description: 'תזכורת שתישלח לצ\'אט הזה בזמן מסוים. repeat לתזכורת חוזרת: freq daily/weekly/monthly/yearly, interval (כל כמה), days לשבועי (0=ראשון ... 6=שבת). entry_id לקשר לפריט ברשימה (התזכורת נעצרת כשהוא נסגר). ' +
+      'list = לצרף לתזכורת את הרשימה העדכנית ברגע השליחה; offer_order = גם כפתור למילוי סל בקרפור; after_id = לחכות לתזכורת אחרת שתבוצע.',
     input_schema: {
       type: 'object',
       properties: {
         text: { type: 'string' }, at: { type: 'string', description: 'זמן מקומי YYYY-MM-DDTHH:MM' },
         repeat: REPEAT,
         entry_id: { type: 'integer' },
+        ...REMINDER_EXTRAS,
       },
       required: ['text', 'at'],
     },
   },
   {
     name: 'reminders_show',
-    description: 'כל התזכורות הפעילות, עם id והמועד הבא.',
-    input_schema: { type: 'object', properties: {} },
+    description: 'כל התזכורות הפעילות, עם id והמועד הבא. waiting = מחכה לתזכורת after_id שתבוצע. ' +
+      'include_fired=true מוסיף תזכורות שנשלחו ב-7 הימים האחרונים (גם חד-פעמיות שכבר לא פעילות), מתי נשלחו ואם סומנו בוצע.',
+    input_schema: { type: 'object', properties: { include_fired: { type: 'boolean' } } },
   },
   {
     name: 'reminder_update',
-    description: 'עריכת תזכורת פעילה לפי id: טקסט, זמן (at), או חזרה (repeat). שלח רק את מה שמשתנה. repeat_off=true הופך אותה לחד-פעמית.',
+    description: 'עריכת תזכורת פעילה לפי id: טקסט, זמן (at), חזרה (repeat), list / offer_order / after_id. שלח רק את מה שמשתנה. repeat_off=true הופך אותה לחד-פעמית, ' +
+      'list="" מוריד את הרשימה, after_off=true מבטל את ההמתנה. done=true מסמן שהתזכורת בוצעה (גם אם כבר נשלחה), ותזכורות שחיכו לה יוצאות.',
     input_schema: {
       type: 'object',
       properties: {
         id: { type: 'integer' }, text: { type: 'string' }, at: { type: 'string', description: 'זמן מקומי YYYY-MM-DDTHH:MM' },
-        repeat: REPEAT, repeat_off: { type: 'boolean' },
+        repeat: REPEAT, repeat_off: { type: 'boolean' }, ...REMINDER_EXTRAS, after_off: { type: 'boolean' }, done: { type: 'boolean' },
       },
       required: ['id'],
     },
@@ -227,6 +236,15 @@ function entryView(e, today) {
   return v;
 }
 
+// What Claude sees for one reminder.
+function reminderView(r, tz) {
+  return {
+    id: r.id, text: r.text, next: r.active ? formatHe(r.next_at, tz) : undefined, repeat: r.rule ?? undefined, entry_id: r.task_id ?? undefined,
+    list: r.list ?? undefined, offer_order: r.offer_order ? true : undefined, after_id: r.after_id ?? undefined, waiting: r.waiting ? true : undefined,
+    last_sent: r.fired_at ? formatHe(r.fired_at, tz) : undefined, done: r.done_at ? true : undefined,
+  };
+}
+
 // The first time a reminder fires: `at` itself, or for a repeat the first matching time from `at` that is not in the past.
 function firstRun(at, repeat, now, tz) {
   if (!parseLocal(at).hasTime) throw new Error('לתזכורת צריך שעה: YYYY-MM-DDTHH:MM');
@@ -294,26 +312,36 @@ export async function runTool(name, input, ctx) {
     case 'reminder_add': {
       const nextAt = firstRun(input.at, input.repeat, now, tz);
       if (input.entry_id && !(await db.entry(input.entry_id))) throw new Error(`אין פריט ${input.entry_id}`);
-      const r = await db.addReminder({ chat_id: chatId, text: input.text, start_local: input.at, next_at: nextAt, rule: input.repeat ?? null, task_id: input.entry_id }, user, now);
-      return { reminder: { id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined } };
+      const r = await db.addReminder({
+        chat_id: chatId, text: input.text, start_local: input.at, next_at: nextAt, rule: input.repeat ?? null, task_id: input.entry_id,
+        list: input.list, offer_order: input.offer_order, after_id: input.after_id,
+      }, user, now);
+      return { reminder: reminderView(r, tz) };
     }
     case 'reminders_show': {
       const cal = await inCalendar(ctx, 'reminder');
-      return {
-        reminders: (await db.activeReminders()).map((r) => ({
-          id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined, entry_id: r.task_id ?? undefined, calendar: cal.has(r.id) || undefined,
-        })),
-      };
+      const out = { reminders: (await db.activeReminders()).map((r) => ({ ...reminderView(r, tz), calendar: cal.has(r.id) || undefined })) };
+      if (input.include_fired) out.sent_last_7_days = (await db.firedReminders(now - 7 * 86_400_000)).map((r) => reminderView(r, tz));
+      return out;
     }
     case 'reminder_update': {
       const old = await db.reminder(input.id);
+      // done works also on a one-time reminder that was already sent (it is no longer active).
+      if (input.done) {
+        if (!old) throw new Error(`אין תזכורת ${input.id}`);
+        if (old.task_id && await db.entry(old.task_id)) await db.updateEntry(old.task_id, { done: true }, user, now);
+        const r = await db.markReminderDone(old.id, now);
+        return followCalendar(ctx, { reminder: reminderView(r, tz) }, 'reminder', [r.id]);
+      }
       if (!old?.active) throw new Error(`אין תזכורת פעילה ${input.id}`);
       const rule = input.repeat_off ? null : input.repeat ?? old.rule;
       const at = input.at ?? old.start_local;
       const timing = input.at !== undefined || input.repeat !== undefined || input.repeat_off
         ? { start_local: at, next_at: firstRun(at, rule, now, tz), rule } : {};
-      const r = await db.updateReminder(input.id, { text: input.text, ...timing });
-      return followCalendar(ctx, { reminder: { id: r.id, text: r.text, next: formatHe(r.next_at, tz), repeat: r.rule ?? undefined } }, 'reminder', [r.id]);
+      const r = await db.updateReminder(input.id, {
+        text: input.text, ...timing, list: input.list, offer_order: input.offer_order, after_id: input.after_off ? null : input.after_id,
+      });
+      return followCalendar(ctx, { reminder: reminderView(r, tz) }, 'reminder', [r.id]);
     }
     case 'reminder_cancel':
       return followCalendar(ctx, { cancelled_ids: await db.cancelReminders(input.ids) }, 'reminder', input.ids);
