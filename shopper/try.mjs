@@ -1,5 +1,5 @@
 // One order by hand, without Telegram: node shopper/try.mjs "חלב 3%" "ביצים L ×12"
-// יאמי: STORE=yummi COOK_URL=<cook page> node shopper/try.mjs "<meal>|<note>" ...   Read the account only: node shopper/try.mjs --scan
+// יאמי: STORE=yummi COOK_URL=<cook page> node shopper/try.mjs "<meal>|<note>" ...   Read the account only: [COOK_URL=... | QUERY=...] node shopper/try.mjs --scan
 // Reports are printed here instead of being sent to the family.
 import { Browser } from './cdp.mjs';
 import { shop } from './agent.mjs';
@@ -8,8 +8,8 @@ import { env, log, claude } from './bot-api.mjs';
 
 const browser = await Browser.connect(Number(env.CDP_PORT ?? 9222));
 if (process.argv[2] === '--scan') {
-  const s = await scanYummi(browser, { cookUrl: env.COOK_URL });
-  console.log(JSON.stringify({ ...s, menu: `${s.menu.length} chars` }, null, 1), `\n${s.menu.slice(0, 3000)}`);
+  const s = await scanYummi(browser, { cookUrl: env.COOK_URL, query: env.QUERY });
+  console.log(JSON.stringify({ ...s, menu: `${s.menu.length} chars`, search: s.search && `${s.search.results.length} chars` }, null, 1), `\n${(s.search?.results ?? s.menu).slice(0, 3000)}`);
   browser.close();
   process.exit(0);
 }

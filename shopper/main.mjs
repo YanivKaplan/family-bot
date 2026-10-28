@@ -9,8 +9,8 @@ import { env, log, bot, claude } from './bot-api.mjs';
 async function scan(job) {
   const browser = await Browser.connect(Number(env.CDP_PORT ?? 9222));
   try {
-    const s = await scanYummi(browser, { cookUrl: job.cook_url });
-    log.info(`scan ${job.id}: ${s.orders.length} orders, menu ${s.menu.length} chars`);
+    const s = await scanYummi(browser, { cookUrl: job.cook_url, query: job.query });
+    log.info(`scan ${job.id}: ${s.orders.length} orders, menu ${s.menu.length} chars, search ${s.search?.results.length ?? '-'} chars`);
     await bot('report', { id: job.id, status: 'scanned', scan: s });
   } catch (err) {
     log.error(`scan ${job.id}`, err.message);

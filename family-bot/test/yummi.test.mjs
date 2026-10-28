@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createHarness, GROUP, USERS } from './harness.mjs';
 import { runTool } from '../src/tools.mjs';
 import { reportOrder, claimOrder } from '../src/order.mjs';
-import { SCAN_KEY, cleanScan, formatSuggestion, parseOrder, parseWeekly } from '../src/yummi.mjs';
+import { SCAN_KEY, mergeScan, formatSuggestion, parseOrder, parseWeekly, menuView } from '../src/yummi.mjs';
 
 const notes = [];
 const claude = { respond: async ({ userText }) => { notes.push(userText); return { text: 'מה בא לכם השבוע?', usage: { input: 1, output: 1 }, toolCalls: [] }; } };
@@ -27,6 +27,7 @@ const DETAILS = ['פרטי ההזמנה', 'לאן:', 'סשה ארגוב 4, קו�
   'סכום ביניים', '₪ 329', 'הנחת שובר', '₪ -250', 'משלוח', '₪ 18', 'סה"כ', '₪ 97'];
 const COOK = 'https://www.yummi.co.il/c/dganit';
 const SCAN = {
+  city: 'רעננה',
   orders: [{ cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: COOK }, { cook: "תאי צ'ו", date: '22/06/26', total: '₪ 333', cook_url: 'https://www.yummi.co.il/c/cho' }],
   last_order: { cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: COOK, details: DETAILS },
   cook: { name: 'דגנית - היופי שבאוכל', url: COOK, info: ['זמינה למחר', 'מינימום למשלוח 289 ₪'] },
@@ -59,11 +60,12 @@ test('once a week the shopper is asked to read the account; its report becomes t
   await h.tick();
   assert.equal((await h.db.get('order:job')).status, 'scanned', 'only once that day');
 
-  const scan = cleanScan(SCAN, job.id, h.now());
+  const scan = mergeScan(null, SCAN, job.id, h.now());
   const { text, buttons } = formatSuggestion(scan);
   assert.match(text, /^🍲 מזמינים השבוע מיאמי\?\n\nבפעם הקודמת \(20\/07\/26\) מדגנית - היופי שבאוכל, ₪347:\n• דיל המנות הפופולריות: פילה פרגית/);
   assert.match(text, /משלוח: יום ב', 20 יולי, 13:00 - 14:00, לסשה ארגוב 4/);
   assert.match(text, /מינימום למשלוח 289 ₪/);
+  assert.match(text, /בשלן אחר לגמרי/);
   assert.deepEqual(buttons[0].map((b) => b.callback_data), [`y:${job.id}:again`, `y:${job.id}:pick`, `y:${job.id}:skip`]);
   await h.db.set(SCAN_KEY, scan);
 });
@@ -84,43 +86,63 @@ test('"the same again" sends the last order to the shopper without a Claude call
   await reportOrder(h.db, { id: job.id, status: 'failed', text: 'x' }, h.now());
 });
 
-test('"choose meals" starts the talk with Claude; meals_menu gives the menu; order_start sends the chosen meals', async () => {
+test('"choose" starts an open talk with Claude; meals_menu gives the last order and its cook\'s menu', async () => {
   const scan = await h.db.get(SCAN_KEY);
   await click(`y:${scan.id}:pick`);
-  assert.match(notes.at(-1), /^\[מערכת\] יניב לחץ\/ה "לבחור מנות"[\s\S]*meals_menu/);
+  assert.match(notes.at(-1), /^\[מערכת\] יניב לחץ\/ה "לבחור"[\s\S]*משהו אחר/);
   assert.equal(h.sent.at(-1).text, 'מה בא לכם השבוע?');
 
   const menu = await run('meals_menu', {});
   assert.equal(menu.cook.url, COOK);
   assert.match(menu.menu, /\[הזמנו בעבר\]/);
   assert.equal(menu.recent_orders.length, 2);
+  assert.equal(menu.city, 'רעננה');
   await assert.rejects(run('meals_menu', { cook_url: 'https://evil.example/c/x' }), /דף בשלן/);
-
-  await assert.rejects(run('order_start', { store: 'yummi' }), /meals/);
-  const { order } = await run('order_start', { store: 'yummi', when: "יום ב' 13:00-14:00", meals: [
-    { text: 'דיל המנות הפופולריות', note: "פרגית בדיז'ון, קבב, לביבות, בולונז" }, { text: 'מרק עדשים מחמם ומפנק', qty: 2 },
-  ] });
-  assert.equal(order.meals, 2);
-  const job = await h.db.get('order:job');
-  assert.equal(job.store, 'yummi');
-  assert.equal(job.reorder, undefined);
-  assert.equal(job.when, "יום ב' 13:00-14:00");
-  assert.deepEqual(job.items.map((i) => [i.text, i.qty]), [['דיל המנות הפופולריות', undefined], ['מרק עדשים מחמם ומפנק', 2]]);
-  await reportOrder(h.db, { id: job.id, status: 'failed', text: 'x' }, h.now());
 });
 
-test('another cook\'s menu is read on request; "not this week" just closes the suggestion', async () => {
-  const r = await run('meals_menu', { cook_url: 'https://www.yummi.co.il/c/cho' });
+test('any cook: a search and a new cook\'s menu are read by the shopper, then the talk goes on; the order goes to that cook', async () => {
+  // A search not read yet: a reading job that remembers what was asked.
+  const r = await run('meals_menu', { query: 'תאילנדי', ask: 'משהו תאילנדי לשבוע' });
   assert.match(r.reading.status, /דקה-שתיים/);
+  let job = await h.db.get('order:job');
+  assert.deepEqual([job.kind, job.query, job.ask, job.cook_url], ['scan', 'תאילנדי', 'משהו תאילנדי לשבוע', undefined]);
+  await assert.rejects(run('meals_menu', { query: 'סושי' }), /כבר יש הזמנה/, 'one reading at a time');
+  let state = mergeScan(await h.db.get(SCAN_KEY), { ...SCAN, search: { query: 'תאילנדי', results: 'נמצאו 2 מנות:\n• Home Cookoo · פאד תאי · ₪ 73 <https://www.yummi.co.il/c/shaycaspi>' } }, job.id, h.now());
+  await h.db.set(SCAN_KEY, state);
+  await reportOrder(h.db, { id: job.id, status: 'scanned' }, h.now());
+  const found = await run('meals_menu', { query: 'תאילנדי' });
+  assert.match(found.search.results, /shaycaspi/);
+  assert.equal(found.other_menus_read[0].url, COOK, 'the last cook\'s menu is still there to compare');
+
+  // That cook's menu, then an order from it (not the last order's cook).
+  await run('meals_menu', { cook_url: 'https://www.yummi.co.il/c/shaycaspi', ask: 'פאד תאי' });
+  job = await h.db.get('order:job');
+  await assert.rejects(run('order_start', { store: 'yummi', cook_url: 'https://www.yummi.co.il/c/shaycaspi', meals: [{ text: 'פאד תאי קלאסי' }] }), /לא קראתי/);
+  state = mergeScan(state, { ...SCAN, cook: { name: 'Home Cookoo', url: 'https://www.yummi.co.il/c/shaycaspi', info: ['מינימום למשלוח 350 ₪'] }, menu: '• פאד תאי קלאסי – ₪ 73' }, job.id, h.now());
+  await h.db.set(SCAN_KEY, state);
+  await reportOrder(h.db, { id: job.id, status: 'scanned' }, h.now());
+  assert.deepEqual(Object.keys(state.menus).sort(), [COOK, 'https://www.yummi.co.il/c/shaycaspi'].sort());
+  assert.match(menuView(state, { cookUrl: 'https://www.yummi.co.il/c/shaycaspi' }).menu, /פאד תאי/);
+
+  await assert.rejects(run('order_start', { store: 'yummi' }), /meals/);
+  const { order } = await run('order_start', { store: 'yummi', when: "יום ב' 13:00-14:00", meals: [{ text: 'פאד תאי קלאסי', qty: 3, note: 'עוף' }, { text: 'גרין גארדן' }] });
+  assert.equal(order.cook, 'Home Cookoo', 'without cook_url: the cook looked at last');
+  job = await h.db.get('order:job');
+  assert.deepEqual([job.store, job.kind, job.cook_url, job.address, job.reorder], ['yummi', 'fill', 'https://www.yummi.co.il/c/shaycaspi', 'סשה ארגוב 4, קומה 2, דירה 7, רעננה', undefined]);
+  assert.deepEqual(job.items.map((i) => [i.text, i.qty, i.note]), [['פאד תאי קלאסי', 3, 'עוף'], ['גרין גארדן', undefined, undefined]]);
+  await reportOrder(h.db, { id: job.id, status: 'failed', text: 'x' }, h.now());
+
+  // Back to the last order's cook, by its url: its menu was kept.
+  const back = await run('order_start', { store: 'yummi', cook_url: COOK, meals: [{ text: 'דיל המנות הפופולריות' }] });
+  assert.equal(back.order.cook, 'דגנית - היופי שבאוכל');
+  await reportOrder(h.db, { id: (await h.db.get('order:job')).id, status: 'failed', text: 'x' }, h.now());
+});
+
+test('a failed reading says so; "not this week" just closes the suggestion', async () => {
+  await run('meals_menu', { refresh: true });
   const job = await h.db.get('order:job');
-  assert.deepEqual([job.kind, job.cook_url], ['scan', 'https://www.yummi.co.il/c/cho']);
-  const other = cleanScan({ ...SCAN, cook: { name: "תאי צ'ו", url: 'https://www.yummi.co.il/c/cho', info: [] } }, job.id);
-  const s = formatSuggestion(other);
-  assert.match(s.text, /^🍲 קראתי את התפריט של תאי צ'ו/);
-  assert.deepEqual(s.buttons, [[{ text: '🍲 לבחור מנות', callback_data: `y:${job.id}:pick` }]]);
   const failed = await reportOrder(h.db, { id: job.id, status: 'failed', text: 'צריך להתחבר' }, h.now());
   assert.match(failed.text, /^🍲 יאמי: לא הצלחתי לקרוא את ההזמנות/);
-
   const before = notes.length;
   await click(`y:${(await h.db.get(SCAN_KEY)).id}:skip`);
   assert.equal(notes.length, before);

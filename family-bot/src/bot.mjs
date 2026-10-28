@@ -226,7 +226,7 @@ export class FamilyBot {
     return this.tg.answerCallback(q.id);
   }
 
-  // ---- buttons under the weekly יאמי suggestion: the same again / choose meals (a talk with Claude) / not this week.
+  // ---- buttons under the weekly יאמי suggestion: the same again / choose (a talk with Claude) / not this week.
   async onMealsButton(q) {
     const { db, cfg } = this;
     const msg = q.message;
@@ -246,13 +246,13 @@ export class FamilyBot {
     } else if (m[2] === 'skip') {
       line = `🙅 לא השבוע (${user})`;
     } else {
-      line = `🍲 ${user} בוחר/ת מנות`;
+      line = `🍲 ${user} בוחר/ת`;
     }
     await this.tg.editText(msg.chat.id, msg.message_id, `${msg.text ?? ''}\n\n${line}`);
     await this.tg.answerCallback(q.id);
     if (m[2] === 'pick') {
-      const note = `${user} לחץ/ה "לבחור מנות" בהצעה השבועית של יאמי. קרא ל-meals_menu, הצע בקצרה 2–3 כיוונים מהתפריט ` +
-        '(לפי מה שהזמינו בעבר והבחירות בדילים), ושאל מה מתאים להם השבוע.';
+      const note = `${user} לחץ/ה "לבחור" בהצעה השבועית של יאמי (ההזמנה הקודמת בהודעה למעלה). שאל בקצרה מה בא להם השבוע – ` +
+        'אותו בשלן עם שינויים, או משהו אחר – ועזור להם לבחור.';
       await this.converse({ chat: msg.chat, from: q.from }, note, { systemNote: true });
     }
   }

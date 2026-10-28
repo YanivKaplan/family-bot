@@ -1,7 +1,7 @@
 // The tools that Claude can call. Each tool changes only household data in the DB.
 import { localToUtc, parseLocal, formatHe, nextOccurrence, localDate } from './time.mjs';
 import { startOrder } from './order.mjs';
-import { SCAN_KEY, menuView } from './yummi.mjs';
+import { SCAN_KEY, menuView, MENU_FRESH_MS, SEARCH_FRESH_MS } from './yummi.mjs';
 import { pushItem, removeItem, afterChange, importEvent, eventView, addEvent, updateEvent, deleteEvent } from './calendar.mjs';
 
 const ids = { type: 'array', items: { type: 'integer' }, minItems: 1, maxItems: 50 };
@@ -153,7 +153,8 @@ export const TOOLS = [
     name: 'order_start',
     description: 'הזמנה אונליין: רובוט במחשב של הבית ממלא את הסל באתר, עוצר לפני התשלום, ושולח לצ\'אט הזה קישור לתשלום. ' +
       'קרא רק אחרי שהצגת את ההזמנה ובני המשפחה אישרו במפורש בהודעה נפרדת שהיא מלאה. ' +
-      'קרפור (ברירת מחדל): entry_ids = פריטי הרשימה שאושרו. יאמי: store="yummi", meals = המנות שאושרו מהבשלן שב-meals_menu, when = מועד המשלוח.',
+      'קרפור (ברירת מחדל): entry_ids = פריטי הרשימה שאושרו. יאמי: store="yummi", cook_url = הבשלן (התפריט שלו נקרא ב-meals_menu), ' +
+      'meals = המנות שאושרו, when = מועד המשלוח. הזמנה אחת = בשלן אחד.',
     input_schema: {
       type: 'object',
       properties: {
@@ -172,15 +173,21 @@ export const TOOLS = [
           },
         },
         when: { type: 'string', description: 'יאמי: מועד המשלוח, למשל "יום ב\' 13:00-14:00" או "הכי מוקדם"' },
+        cook_url: { type: 'string', description: 'יאמי: דף הבשלן. בלי = הבשלן האחרון שהתפריט שלו נקרא' },
       },
     },
   },
   {
     name: 'meals_menu',
-    description: 'יאמי (בשלנים ביתיים): ההזמנה האחרונה מ"הזמנות שלי" (מנות, בחירות, כתובת ומועד), ההזמנות הקודמות (בשלן, תאריך, cook_url), ' +
-      'והתפריט של הבשלן (דילים עם הבחירות שבהם, מנות ומחירים; [הזמנו בעבר] = הזמינו את זה בעבר). ' +
-      'refresh=true = הרובוט קורא שוב את החשבון (כדקה-שתיים, ואז ההצעה נשלחת לצ\'אט). cook_url = התפריט של בשלן אחר מההזמנות הקודמות (גם הוא נקרא מחדש).',
-    input_schema: { type: 'object', properties: { refresh: { type: 'boolean' }, cook_url: { type: 'string' } } },
+    description: 'יאמי (בשלנים ביתיים): תמיד ההזמנה האחרונה מ"הזמנות שלי" (בשלן, מנות, בחירות, כתובת ומועד) וההזמנות הקודמות. ' +
+      'בלי פרמטרים = גם התפריט של הבשלן מההזמנה האחרונה. cook_url = התפריט של כל בשלן (מההזמנות, מחיפוש, או שנקרא קודם). ' +
+      'query = חיפוש בעיר של המשפחה: מנה, סגנון או שם בשלן ("תאילנדי", "מרק עוף", "טבעוני"); query="" = רשימת הבשלנים המומלצים. ' +
+      'בתפריט: דילים עם הבחירות שבהם, מנות ומחירים, [הזמנו בעבר] = הזמינו בעבר. מה שעוד לא נקרא (או refresh=true) – הרובוט קורא באתר (דקה-שתיים), ' +
+      'ואז השיחה ממשיכה לבד: ask = מה המשפחה ביקשה, כדי להמשיך משם.',
+    input_schema: {
+      type: 'object',
+      properties: { cook_url: { type: 'string' }, query: { type: 'string' }, refresh: { type: 'boolean' }, ask: { type: 'string' } },
+    },
   },
   {
     name: 'calendar_show',
@@ -393,17 +400,18 @@ export async function runTool(name, input, ctx) {
     case 'order_start': {
       if (!ctx.ordersEnabled) throw new Error('הזמנה אונליין עוד לא מוגדרת בבוט');
       if (input.store === 'yummi') {
-        const scan = await db.get(SCAN_KEY);
-        if (!scan?.cook) throw new Error('אין תפריט של בשלן מיאמי. קרא קודם ל-meals_menu');
+        const state = await db.get(SCAN_KEY);
+        const menu = state?.menus?.[input.cook_url ?? state.cook_url];
+        if (!menu) throw new Error('לא קראתי את התפריט של הבשלן הזה. קרא קודם ל-meals_menu עם cook_url שלו');
         if (!input.meals?.length) throw new Error('צריך meals: המנות שאושרו');
         const items = input.meals.map((m, i) => ({
           id: i + 1, text: String(m.text).slice(0, 120), ...(m.qty > 1 ? { qty: m.qty } : {}), ...(m.note ? { note: String(m.note).slice(0, 300) } : {}),
         }));
         const job = await startOrder(db, {
-          chatId, by: user, store: 'yummi', items, cook: scan.cook.name, cook_url: scan.cook.url,
-          address: scan.last_order?.address, when: input.when ? String(input.when).slice(0, 120) : undefined,
+          chatId, by: user, store: 'yummi', items, cook: menu.cook.name, cook_url: menu.cook.url,
+          address: state.last_order?.address, when: input.when ? String(input.when).slice(0, 120) : undefined,
         }, now);
-        return { order: { id: job.id, meals: items.length, cook: scan.cook.name, status: 'נשלח לרובוט; הוא יכתוב כאן כשהסל ביאמי מוכן' } };
+        return { order: { id: job.id, meals: items.length, cook: menu.cook.name, status: 'נשלח לרובוט; הוא יכתוב כאן כשהסל ביאמי מוכן' } };
       }
       if (!input.entry_ids?.length) throw new Error('צריך entry_ids: פריטי הרשימה שאושרו');
       const entries = [];
@@ -417,12 +425,16 @@ export async function runTool(name, input, ctx) {
     }
     case 'meals_menu': {
       if (!ctx.ordersEnabled) throw new Error('הזמנה אונליין עוד לא מוגדרת בבוט');
-      const scan = await db.get(SCAN_KEY);
-      const cookUrl = input.cook_url && /^https:\/\/www\.yummi\.co\.il\/c\//.test(input.cook_url) ? input.cook_url : undefined;
-      if (input.cook_url && !cookUrl) throw new Error('cook_url צריך להיות דף בשלן ביאמי (מ-recent_orders)');
-      if (scan && !input.refresh && (!cookUrl || cookUrl === scan.cook?.url)) return menuView(scan, now);
-      const job = await startOrder(db, { chatId, by: user, store: 'yummi', kind: 'scan', cook_url: cookUrl }, now);
-      return { reading: { id: job.id, status: 'הרובוט קורא עכשיו את החשבון ביאמי. ההצעה עם התפריט תישלח לצ\'אט הזה בעוד דקה-שתיים.' } };
+      const state = await db.get(SCAN_KEY);
+      if (input.cook_url && !/^https:\/\/www\.yummi\.co\.il\/c\/[^/?#]+$/.test(input.cook_url)) throw new Error('cook_url צריך להיות דף בשלן ביאמי (https://www.yummi.co.il/c/...)');
+      const query = input.query == null ? undefined : String(input.query).trim().slice(0, 80);
+      const cookUrl = query == null ? input.cook_url ?? state?.last_order?.cook_url : undefined;
+      const kept = query != null ? state?.searches?.[query] : state?.menus?.[cookUrl];
+      if (state && !input.refresh && kept && now - kept.at < (query != null ? SEARCH_FRESH_MS : MENU_FRESH_MS)) return menuView(state, { cookUrl, query }, now);
+      const job = await startOrder(db, {
+        chatId, by: user, store: 'yummi', kind: 'scan', cook_url: input.cook_url, query, ask: String(input.ask ?? '').slice(0, 300),
+      }, now);
+      return { reading: { id: job.id, status: 'הרובוט קורא עכשיו ביאמי (דקה-שתיים). כשיסיים, השיחה תמשיך כאן לבד: אל תציע מנות עד אז.' } };
     }
     case 'calendar_show': {
       const cal = needCalendar(ctx);

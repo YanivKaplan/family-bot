@@ -5,7 +5,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHarness, localEnv } from './harness.mjs';
-import { SCAN_KEY, cleanScan } from '../src/yummi.mjs';
+import { SCAN_KEY, mergeScan, readingNote } from '../src/yummi.mjs';
+import { reportOrder } from '../src/order.mjs';
 
 const env = localEnv();
 const MAX_MS = Number(env.LIVE_MAX_MS ?? 30_000);
@@ -243,7 +244,7 @@ test('A reminder that already went off can still be found and marked done', { sk
 test('יאמי: choose this week\'s meals from the last order, then order after a yes', { skip }, async () => {
   h.config.shopperSecret ??= 'live'; // order tools on; nothing reaches a real shopper here
   const cook = 'https://www.yummi.co.il/c/dganit';
-  await h.db.set(SCAN_KEY, cleanScan({
+  await h.db.set(SCAN_KEY, mergeScan(null, {
     orders: [{ cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: cook }],
     last_order: { cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: cook, details: ['פרטי ההזמנה', 'לאן:', 'סשה ארגוב 4, רעננה', 'למתי:',
       "יום ב', 20 יולי, 13:00 - 14:00", 'פרטי ההזמנה', 'דיל המנות הפופולריות', "פילה פרגית בחרדל דיז'ון (2 מנות)", 'קציצות פרסה עסיסיות עם בשר (8 יחידות)',
@@ -264,4 +265,52 @@ test('יאמי: choose this week\'s meals from the last order, then order after 
   assert.ok(job.items.some((i) => /דיל המנות/.test(i.text) && /קבב/.test(i.note ?? '')), `deal with kebab: ${JSON.stringify(job.items)}`);
   assert.ok(job.items.some((i) => /מרק עדשים/.test(i.text)), 'soup added');
   assert.equal(job.cook_url, cook);
+});
+
+test('יאמי: something else this week – a search, another cook\'s menu, then the order goes to that cook', { skip }, async () => {
+  const job = async () => h.db.get('order:job');
+  const finish = async () => { const j = await job(); if (j && ['queued', 'running'].includes(j.status)) await reportOrder(h.db, { id: j.id, status: 'failed', text: 'x' }, h.now()); };
+  await finish();
+  // The shopper's reading arrives: kept, and the conversation goes on (as the Worker does).
+  const readingArrives = async (scan) => {
+    const j = await job();
+    const state = mergeScan(await h.db.get(SCAN_KEY), scan, j.id, h.now());
+    await h.db.set(SCAN_KEY, state);
+    await reportOrder(h.db, { id: j.id, status: 'scanned' }, h.now());
+    const s0 = h.sent.length;
+    await h.bot.converse({ chat: { id: -100, type: 'group' }, from: { first_name: j.by } }, readingNote(j, state), { systemNote: true });
+    return h.sent.slice(s0).map((m) => m.text).join('\n');
+  };
+
+  await say('בוט, השבוע בא לנו משהו אחר מיאמי, אולי תאילנדי?');
+  let j = await job();
+  assert.equal(j?.kind, 'scan', `a search is read: ${JSON.stringify(j)}`);
+  assert.match(j.query, /תאי/);
+  const cookoo = 'https://www.yummi.co.il/c/shaycaspi';
+  const after1 = await readingArrives({ city: 'רעננה', orders: [], last_order: null, search: { query: j.query, results: [
+    'נמצאו 3 מנות:',
+    `• Home Cookoo · אסייתי עם השפעות מלונדון · פאד תאי קלאסי · * מנה + עוף · ₪ 73 · זמין למחר · מינימום למשלוח 350 ₪ <${cookoo}>`,
+    `• Home Cookoo · אסייתי עם השפעות מלונדון · גרין גארדן · * עוף · ₪ 73 · זמין למחר · מינימום למשלוח 350 ₪ <${cookoo}>`,
+    "• תאי צ'ו · מטבח תאילנדי 100% אותנטי · טום קא טופו · ₪ 69 · זמין למחרתיים <https://www.yummi.co.il/c/cho>",
+  ].join('\n') } });
+  assert.match(after1, /Home Cookoo|תאי צ'ו/, `suggests from the search: ${after1}`);
+
+  await say('בוט, בוא נלך על Home Cookoo. מה יש שם חוץ מפאד תאי?');
+  j = await job();
+  assert.equal(j?.cook_url, cookoo, `that cook's menu is read: ${JSON.stringify(j)}`);
+  const after2 = await readingArrives({ city: 'רעננה', orders: [], last_order: null,
+    cook: { name: 'Home Cookoo', url: cookoo, info: ['זמין למחר', 'מינימום למשלוח 350 ₪'] },
+    menu: ['## עיקריות', '• פאד תאי קלאסי – * מנה + עוף · ₪ 73 · * מנה + טופו · ₪ 73', '• גרין גארדן – קארי ירוק · * עוף · ₪ 73', '• בא לי באלי - פאננג קארי טופו – ₪ 73', '• אורז יסמין – ₪ 25'].join('\n') });
+  assert.match(after2, /פאננג|גרין גארדן|אורז/, `talks about the menu: ${after2}`);
+
+  const r = await say('בוט, ניקח 2 פאד תאי עם עוף, 2 גרין גארדן עם עוף ופאננג אחד. כמה זה יוצא?');
+  assert.equal((await job())?.kind, 'scan', `no order before a yes: ${r.reply}`);
+  assert.match(r.reply, /350|מינימום/, 'notices the cook\'s minimum (5 × ₪73 = ₪365)');
+  await say('בוט, מעולה, מאשר. משלוח מחר בצהריים');
+  j = await job();
+  assert.equal(j?.kind, 'fill', `ordered: ${JSON.stringify(j)}`);
+  assert.equal(j.cook_url, cookoo);
+  assert.ok(j.items.some((i) => /פאד תאי/.test(i.text) && i.qty === 2), JSON.stringify(j.items));
+  assert.ok(j.items.some((i) => /פאננג|באלי/.test(i.text)), 'panang');
+  assert.match(j.when ?? '', /מחר|צהריים|1[2-4]/);
 });

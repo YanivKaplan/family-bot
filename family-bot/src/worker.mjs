@@ -10,7 +10,7 @@ import { D1Adapter } from './d1.mjs';
 import { Telegram } from './telegram.mjs';
 import { FamilyBot } from './bot.mjs';
 import { claimOrder, reportOrder } from './order.mjs';
-import { SCAN_KEY, cleanScan, formatSuggestion } from './yummi.mjs';
+import { SCAN_KEY, mergeScan, formatSuggestion, readingNote } from './yummi.mjs';
 import { localDate } from './time.mjs';
 import { finishConnect } from './calendar.mjs';
 
@@ -83,12 +83,18 @@ async function shopper(request, env, path) {
     if (!r) return json({ ok: false, error: 'unknown or finished order' }, 409);
     if (r.text) await bot.tg.send(r.job.chat_id, r.text);
     else {
-      // A יאמי reading: keep it, and suggest this week's order. In the chat history too, so a reply to it makes sense to Claude.
-      const scan = cleanScan(body.scan, r.job.id);
-      await db.set(SCAN_KEY, scan);
-      const { text, buttons } = formatSuggestion(scan);
-      await bot.tg.send(r.job.chat_id, text, { buttons });
-      await db.addHistory(r.job.chat_id, 'assistant', text, 24);
+      // A יאמי reading: keep it. Asked for in a conversation -> Claude goes on with it; the weekly one -> the suggestion
+      // (in the chat history too, so a reply to it makes sense to Claude).
+      const state = mergeScan(await db.get(SCAN_KEY), body.scan, r.job.id);
+      await db.set(SCAN_KEY, state);
+      const { chat_id: chatId, ask, by } = r.job;
+      if (ask != null) {
+        await bot.converse({ chat: { id: chatId, type: chatId < 0 ? 'group' : 'private' }, from: { first_name: by } }, readingNote(r.job, state), { systemNote: true });
+      } else {
+        const { text, buttons } = formatSuggestion(state);
+        await bot.tg.send(chatId, text, { buttons });
+        await db.addHistory(chatId, 'assistant', text, 24);
+      }
     }
     return json({ ok: true });
   }

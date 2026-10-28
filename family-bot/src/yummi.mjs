@@ -52,48 +52,76 @@ export function parseOrder(lines = []) {
   return { address: at('לאן:'), when: at('למתי:'), meals };
 }
 
-// The shopper's reading, cleaned and capped, as kept in kv.
-export function cleanScan(scan, jobId, now = Date.now()) {
+// What the bot knows about יאמי, kept in kv: the account (recent orders, the last one in detail), and the last few
+// menus and searches the shopper read, so the family can compare cooks and order from any of them.
+const MAX_KEPT = 4;
+export const MENU_FRESH_MS = 48 * 3_600_000;
+export const SEARCH_FRESH_MS = 12 * 3_600_000;
+const newest = (o) => Object.fromEntries(Object.entries(o).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_KEPT));
+
+// Merges one reading of the shopper (shopper/yummi.mjs), cleaned and capped, into the kept state.
+export function mergeScan(prev, scan, jobId, now = Date.now()) {
   const o = scan?.last_order;
-  return {
-    id: jobId, at: now,
+  const state = {
+    id: jobId, at: now, city: s(scan?.city, 40) || prev?.city || null,
     orders: (scan?.orders ?? []).slice(0, 8).map((r) => ({ cook: s(r.cook, 80), date: s(r.date, 20), total: s(r.total, 20), cook_url: s(r.cook_url, 300) })),
     last_order: o ? { cook: s(o.cook, 80), date: s(o.date, 20), total: s(o.total, 20), cook_url: s(o.cook_url, 300), ...parseOrder((o.details ?? []).slice(0, 120).map((l) => s(l, 200))) } : null,
-    cook: scan?.cook ? { name: s(scan.cook.name, 80), url: s(scan.cook.url, 300), info: (scan.cook.info ?? []).slice(0, 4).map((x) => s(x, 60)) } : null,
-    menu: String(scan?.menu ?? '').slice(0, 20_000),
+    menus: { ...prev?.menus }, searches: { ...prev?.searches }, cook_url: prev?.cook_url ?? null,
   };
+  if (scan?.cook?.url) {
+    const url = s(scan.cook.url, 300);
+    state.menus[url] = {
+      at: now, cook: { name: s(scan.cook.name, 80), url, info: (scan.cook.info ?? []).slice(0, 4).map((x) => s(x, 60)) },
+      menu: String(scan.menu ?? '').slice(0, 20_000),
+    };
+    state.cook_url = url; // the cook the family looked at last
+  }
+  if (scan?.search) state.searches[s(scan.search.query, 80)] = { at: now, results: String(scan.search.results ?? '').slice(0, 12_000) };
+  state.menus = newest(state.menus);
+  state.searches = newest(state.searches);
+  return state;
 }
 
 const mealLine = (m) => `• ${m.text}${m.qty > 1 ? ` ×${m.qty}` : ''}${m.choices?.length ? `: ${m.choices.join(', ')}` : ''}${m.price ? ` (${m.price})` : ''}`;
 
-// The weekly message, with its buttons (callback_data "y:<scan id>:<action>").
-export function formatSuggestion(scan) {
-  const o = scan.last_order;
+// The weekly message: the last order first, with its buttons (callback_data "y:<reading id>:<action>").
+export function formatSuggestion(state) {
+  const o = state.last_order;
   const buttons = [[
-    ...(o?.meals.length ? [{ text: '🔁 אותו דבר', callback_data: `y:${scan.id}:again` }] : []),
-    { text: '🍲 לבחור מנות', callback_data: `y:${scan.id}:pick` },
-    { text: '🙅 לא השבוע', callback_data: `y:${scan.id}:skip` },
+    ...(o?.meals.length ? [{ text: '🔁 אותו דבר', callback_data: `y:${state.id}:again` }] : []),
+    { text: '🍲 לבחור', callback_data: `y:${state.id}:pick` },
+    { text: '🙅 לא השבוע', callback_data: `y:${state.id}:skip` },
   ]];
-  if (!o) return { text: '🍲 יאמי: לא מצאתי הזמנות קודמות בחשבון. רוצים לבחור מנות? השיבו להודעה הזו.', buttons };
-  // A reading asked in the chat for another cook: the menu is ready, the talk goes on.
-  if (scan.cook && scan.cook.url !== o.cook_url) {
-    return { text: `🍲 קראתי את התפריט של ${scan.cook.name}${scan.cook.info.length ? ` (${scan.cook.info.join(' · ')})` : ''}. השיבו להודעה הזו עם מה שבא לכם, ואעזור לבחור.`, buttons: [[buttons[0].at(-2)]] };
-  }
+  if (!o) return { text: '🍲 מזמינים השבוע מיאמי? לא מצאתי הזמנות קודמות בחשבון. ספרו לי מה בא לכם (השיבו להודעה הזו).', buttons };
+  const info = state.menus[o.cook_url]?.cook.info ?? [];
   const text = [
     '🍲 מזמינים השבוע מיאמי?',
     `בפעם הקודמת (${o.date}) מ${o.cook}, ${o.total.replace(/\s+/g, '')}:\n${o.meals.map(mealLine).join('\n')}`,
     o.when ? `משלוח: ${o.when}${o.address ? `, ל${o.address}` : ''}` : '',
-    scan.cook?.info.length ? `${scan.cook.name}: ${scan.cook.info.join(' · ')}` : '',
-    'אפשר להזמין שוב אותו דבר, או לבחור מנות אחרות (השיבו להודעה הזו, למשל "בלי הלביבות, ותוסיף מרק עדשים").',
+    info.length ? `${o.cook}: ${info.join(' · ')}` : '',
+    'אפשר אותו דבר, לשנות מנות, או בשלן אחר לגמרי – השיבו להודעה הזו (למשל "בלי הלביבות ותוסיף מרק", "משהו תאילנדי", "מה יש אצל תאי צ\'ו?").',
   ].filter(Boolean).join('\n\n');
   return { text, buttons };
 }
 
-// For the meals_menu tool.
-export function menuView(scan, now = Date.now()) {
+// A reading Claude asked for is done: the [מערכת] turn that lets the conversation go on.
+export function readingNote(job, state) {
+  const what = job.query != null ? `חיפוש "${job.query}"` : `התפריט של ${state.menus[state.cook_url]?.cook.name ?? 'הבשלן'}`;
+  const params = job.query != null ? `query="${job.query}"` : `cook_url=${state.cook_url}`;
+  return `הרובוט סיים לקרוא ביאמי: ${what}. מה שביקשו: ${job.ask || 'להמשיך לבחור'}. קרא ל-meals_menu עם ${params} והמשך את השיחה משם.`;
+}
+
+// For the meals_menu tool: the account, what was asked (a menu or a search), and what else is already read.
+export function menuView(state, { cookUrl, query } = {}, now = Date.now()) {
+  const age = (at) => Math.round((now - at) / 3_600_000);
+  const menu = query == null ? state.menus[cookUrl] : null;
+  const search = query != null ? state.searches[query] : null;
   return {
-    read_hours_ago: Math.round((now - scan.at) / 3_600_000),
-    last_order: scan.last_order, recent_orders: scan.orders, cook: scan.cook, menu: scan.menu,
+    city: state.city, last_order: state.last_order, recent_orders: state.orders,
+    ...(menu ? { cook: menu.cook, menu: menu.menu, menu_read_hours_ago: age(menu.at) } : {}),
+    ...(search ? { search: { query, results: search.results, read_hours_ago: age(search.at) } } : {}),
+    other_menus_read: Object.values(state.menus).filter((m) => m !== menu).map((m) => ({ ...m.cook, read_hours_ago: age(m.at) })),
+    other_searches_read: Object.keys(state.searches).filter((q) => q !== query),
   };
 }
 

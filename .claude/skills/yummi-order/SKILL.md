@@ -25,8 +25,10 @@ their label, and "(checked)" when chosen.
 ## The site (read from the live site; correct it after real runs)
 - הזמנות שלי (/orders): one row per past order (cook, number, date, total). "לפירוט המלא ולהזמנה חוזרת" opens its
   details (address "לאן", time "למתי", the dishes); there "להזמנה חוזרת" puts the same order in the cart again.
-- A cook's page (/c/<cook>): the top bar "משלוח" / a city / "למתי?" is the delivery place and time; "מינימום למשלוח N ₪"
-  is that cook's minimum. Categories (מבצעים!, עיקריות, ...) hold the cards.
+- The top bar "משלוח" / a city / "למתי?" is the delivery place and time. The city must be the family's (the end of the
+  delivery address). Another city: press it; the popup "לאן ומתי ההזמנה?" has a city text field (type the city), a date,
+  and "עדכון הרשימה".
+- A cook's page (/c/<cook>): "מינימום למשלוח N ₪" is that cook's minimum. Categories (מבצעים!, עיקריות, ...) hold the cards.
 - A deal card ("דיל ...", "מארז ..."): "לבחירת המנות" opens a drawer at the bottom with the deal and "להוספה להזמנה";
   a deal has groups "<group> - סוג אחד לבחירה" (or "2 סוגים לבחירה"): choose exactly what the item's note says, one per
   group, and only then add. A size ("ניתן להגדיל ל-...", "דיל למשפחה עם תוספת ...") is chosen only when the note asks for it.
@@ -58,11 +60,14 @@ Open the cart, check it holds what you added, and go on to the order (the cart's
 
 ## Maintenance
 (Not sent to the shopper. For Claude Code sessions working on this flow.)
-- Flow: once a week (YUMMI_WEEKLY in family-bot/wrangler.toml, e.g. "sun 10:00") the Worker queues a job of kind
-  `scan` in kv `order:job` (family-bot/src/yummi.mjs). The shopper reads הזמנות שלי and the last cook's menu in code
-  (shopper/yummi.mjs, no Claude) and reports `scanned`; the Worker keeps it in kv `yummi:scan` and sends the suggestion
-  with buttons (same again / choose meals / not this week). The family talks with the bot (tool `meals_menu`), then
-  `order_start` with store `yummi` queues the chosen meals; `shopper/agent.mjs` fills the cart with this skill.
+- Flow: a job of kind `scan` in kv `order:job` makes the shopper read the account in code (shopper/yummi.mjs, no Claude):
+  הזמנות שלי, then a cook's menu or a search (`/search?delivery_method=0&city=<city>&query=<q>&vue=1`; the site answers
+  with dishes from many cooks, or with cooks whose name matched). The Worker merges it into kv `yummi:scan` (the account
+  + the last 4 menus and searches, family-bot/src/yummi.mjs).
+  Once a week (YUMMI_WEEKLY in family-bot/wrangler.toml, e.g. "sun 10:00") the reading of the last order's cook ends in
+  the suggestion with buttons (same again / choose / not this week). A reading asked by Claude (`meals_menu` with a
+  cook_url or query not read yet) ends in a `[מערכת]` turn, and the conversation goes on. `order_start` with store
+  `yummi` and a cook_url whose menu was read queues the chosen meals; `shopper/agent.mjs` fills the cart with this skill.
 - The rest (services, the remote view, logs) is the same as in `.claude/skills/carrefour-order`.
 - Read the account without Telegram: `node shopper/try.mjs --scan`. One order by hand:
   `STORE=yummi COOK_URL=https://www.yummi.co.il/c/... node shopper/try.mjs "דיל המנות הפופולריות|פרגית בדיז'ון, קציצות פרסה"`.

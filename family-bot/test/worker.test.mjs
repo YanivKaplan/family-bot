@@ -7,7 +7,7 @@ import worker from '../src/worker.mjs';
 import { HouseDB } from '../src/db.mjs';
 import { D1Adapter } from '../src/d1.mjs';
 import { runTool } from '../src/tools.mjs';
-import { formatReport } from '../src/order.mjs';
+import { formatReport, startOrder } from '../src/order.mjs';
 
 // Minimal D1 binding: prepare().bind().run/first/all, batch.
 function fakeD1() {
@@ -138,11 +138,11 @@ test('online order: confirmed list -> shopper takes it once -> report goes to th
   assert.ok(await runTool('order_start', { entry_ids: [eggs.id] }, ctx), 'a new order after the last one finished');
 });
 
-test('a יאמי reading from the shopper is kept, and the group gets the suggestion with buttons', async () => {
+test('the weekly יאמי reading is kept, and the group gets the suggestion with buttons', async () => {
   const db = new HouseDB(new D1Adapter(env.DB));
   const left = (await (await shopper('next')).json()).job; // the last test's order
   if (left) await shopper('report', { id: left.id, status: 'failed', text: 'x' });
-  const { reading } = await runTool('meals_menu', {}, { db, tz: 'Asia/Jerusalem', chatId: GROUP, user: 'X', ordersEnabled: true });
+  const reading = await startOrder(db, { chatId: GROUP, by: 'הבוט', store: 'yummi', kind: 'scan' }); // as the weekly trigger does
   const { job } = await (await shopper('next')).json();
   assert.equal(job.id, reading.id);
   sent.length = 0;
@@ -155,8 +155,25 @@ test('a יאמי reading from the shopper is kept, and the group gets the sugges
   assert.equal(res.status, 200);
   assert.match(sent.at(-1).text, /^🍲 מזמינים השבוע מיאמי\?[\s\S]*• דיל המנות הפופולריות \(₪329\)/);
   assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard[0].map((b) => b.callback_data.split(':')[2]), ['again', 'pick', 'skip']);
-  assert.equal((await db.get('yummi:scan')).menu, '• קבב עסיסי – ₪ 44');
+  assert.equal((await db.get('yummi:scan')).menus['https://www.yummi.co.il/c/d'].menu, '• קבב עסיסי – ₪ 44');
   assert.match((await db.history(GROUP, 3600_000)).at(-1).content, /מזמינים השבוע/);
+});
+
+test('a יאמי reading Claude asked for goes back into the conversation instead of the weekly message', async () => {
+  const db = new HouseDB(new D1Adapter(env.DB));
+  const before = claudeCalls;
+  const { reading } = await runTool('meals_menu', { query: 'תאילנדי', ask: 'משהו תאילנדי' }, { db, tz: 'Asia/Jerusalem', chatId: GROUP, user: 'X', ordersEnabled: true });
+  const { job } = await (await shopper('next')).json();
+  assert.equal(job.id, reading.id);
+  sent.length = 0;
+  await shopper('report', { id: job.id, status: 'scanned', scan: { orders: [], last_order: null, city: 'רעננה', search: { query: 'תאילנדי', results: '• תאי צ\'ו <https://www.yummi.co.il/c/cho>' } } });
+  assert.equal(claudeCalls, before + 1, 'Claude goes on with the talk');
+  assert.equal(sent.at(-1).text, 'שלום!');
+  assert.equal(sent.at(-1).reply_markup, undefined);
+  const state = await db.get('yummi:scan');
+  assert.match(state.searches['תאילנדי'].results, /cho/);
+  assert.ok(state.menus['https://www.yummi.co.il/c/d'], 'the menu read before is kept');
+  assert.match((await db.history(GROUP, 3600_000)).at(-2).content, /^\[מערכת\] הרובוט סיים לקרוא ביאמי: חיפוש "תאילנדי"\. מה שביקשו: משהו תאילנדי\. קרא ל-meals_menu עם query=\"תאילנדי\"/);
 });
 
 test('the shopper borrows the bot\'s Claude key, with its own daily count', async () => {

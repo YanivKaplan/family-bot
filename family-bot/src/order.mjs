@@ -7,8 +7,8 @@ const ACTIVE = new Set(['queued', 'running', 'needs_human']);
 
 export const STORES = { carrefour: 'קרפור', yummi: 'יאמי' };
 const ICON = { carrefour: '🛒', yummi: '🍲' };
-// What a יאמי order carries beyond its meals.
-const EXTRA = ['cook', 'cook_url', 'address', 'when', 'reorder'];
+// What a יאמי job carries beyond its meals (a reading: which cook or search, and what the family asked, to go on with it).
+const EXTRA = ['cook', 'cook_url', 'address', 'when', 'reorder', 'query', 'ask'];
 
 // entries: list entries (Carrefour), or items: [{ id, text, qty?, note? }] (יאמי meals, which are not kept in a list).
 export async function startOrder(db, { chatId, by, store = 'carrefour', kind = 'fill', entries, items, ...extra }, now = Date.now()) {
