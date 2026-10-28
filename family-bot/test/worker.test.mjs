@@ -138,6 +138,27 @@ test('online order: confirmed list -> shopper takes it once -> report goes to th
   assert.ok(await runTool('order_start', { entry_ids: [eggs.id] }, ctx), 'a new order after the last one finished');
 });
 
+test('a יאמי reading from the shopper is kept, and the group gets the suggestion with buttons', async () => {
+  const db = new HouseDB(new D1Adapter(env.DB));
+  const left = (await (await shopper('next')).json()).job; // the last test's order
+  if (left) await shopper('report', { id: left.id, status: 'failed', text: 'x' });
+  const { reading } = await runTool('meals_menu', {}, { db, tz: 'Asia/Jerusalem', chatId: GROUP, user: 'X', ordersEnabled: true });
+  const { job } = await (await shopper('next')).json();
+  assert.equal(job.id, reading.id);
+  sent.length = 0;
+  const res = await shopper('report', { id: job.id, status: 'scanned', scan: {
+    orders: [{ cook: 'דגנית', date: '20/07/26', total: '₪ 347', cook_url: 'https://www.yummi.co.il/c/d' }],
+    last_order: { cook: 'דגנית', date: '20/07/26', total: '₪ 347', cook_url: 'https://www.yummi.co.il/c/d',
+      details: ['פרטי ההזמנה', 'פרטי ההזמנה', 'דיל המנות הפופולריות', 'כמות 1', '₪ 329', 'סכום ביניים'] },
+    cook: { name: 'דגנית', url: 'https://www.yummi.co.il/c/d', info: [] }, menu: '• קבב עסיסי – ₪ 44',
+  } });
+  assert.equal(res.status, 200);
+  assert.match(sent.at(-1).text, /^🍲 מזמינים השבוע מיאמי\?[\s\S]*• דיל המנות הפופולריות \(₪329\)/);
+  assert.deepEqual(sent.at(-1).reply_markup.inline_keyboard[0].map((b) => b.callback_data.split(':')[2]), ['again', 'pick', 'skip']);
+  assert.equal((await db.get('yummi:scan')).menu, '• קבב עסיסי – ₪ 44');
+  assert.match((await db.history(GROUP, 3600_000)).at(-1).content, /מזמינים השבוע/);
+});
+
 test('the shopper borrows the bot\'s Claude key, with its own daily count', async () => {
   const before = claudeCalls;
   const res = await shopper('claude', { system: 's', tools: [], messages: [{ role: 'user', content: 'hi' }] });

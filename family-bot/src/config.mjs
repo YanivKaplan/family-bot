@@ -1,4 +1,5 @@
 // Settings from environment variables (process.env on Node, the env object on Cloudflare Workers).
+import { parseWeekly } from './yummi.mjs';
 const list = (v) => String(v ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const ids = (v) => new Set(list(v).map(Number).filter(Number.isFinite));
 
@@ -20,6 +21,7 @@ export function loadConfig(env) {
     webhookSecret: env.WEBHOOK_SECRET || null,
     shopperSecret: env.SHOPPER_SECRET || null, // the home machine that fills online carts (shopper/); empty = off
     shopperModel: env.SHOPPER_MODEL || 'claude-sonnet-5-5',
+    yummiWeekly: parseWeekly(env.YUMMI_WEEKLY), // the weekly יאמי suggestion ("sun 10:00"); empty = only on request
     botId: Number(String(env.TELEGRAM_BOT_TOKEN).split(':')[0]) || null, // the token starts with the bot id
     botUsername: env.BOT_USERNAME || null,
     anthropicKey: env.ANTHROPIC_API_KEY,

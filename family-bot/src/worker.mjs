@@ -10,6 +10,7 @@ import { D1Adapter } from './d1.mjs';
 import { Telegram } from './telegram.mjs';
 import { FamilyBot } from './bot.mjs';
 import { claimOrder, reportOrder } from './order.mjs';
+import { SCAN_KEY, cleanScan, formatSuggestion } from './yummi.mjs';
 import { localDate } from './time.mjs';
 import { finishConnect } from './calendar.mjs';
 
@@ -80,7 +81,15 @@ async function shopper(request, env, path) {
   if (path === '/shopper/report') {
     const r = await reportOrder(db, body);
     if (!r) return json({ ok: false, error: 'unknown or finished order' }, 409);
-    await bot.tg.send(r.job.chat_id, r.text);
+    if (r.text) await bot.tg.send(r.job.chat_id, r.text);
+    else {
+      // A יאמי reading: keep it, and suggest this week's order. In the chat history too, so a reply to it makes sense to Claude.
+      const scan = cleanScan(body.scan, r.job.id);
+      await db.set(SCAN_KEY, scan);
+      const { text, buttons } = formatSuggestion(scan);
+      await bot.tg.send(r.job.chat_id, text, { buttons });
+      await db.addHistory(r.job.chat_id, 'assistant', text, 24);
+    }
     return json({ ok: true });
   }
   if (path === '/shopper/claude') {

@@ -5,6 +5,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHarness, localEnv } from './harness.mjs';
+import { SCAN_KEY, cleanScan } from '../src/yummi.mjs';
 
 const env = localEnv();
 const MAX_MS = Number(env.LIVE_MAX_MS ?? 30_000);
@@ -237,4 +238,30 @@ test('A reminder that already went off can still be found and marked done', { sk
   await say('בוט, נרשמנו לערכת לידה', { as: 'מיכל' });
   assert.ok((await h.db.reminder(first.id)).done_at, 'marked done');
   assert.equal((await h.state()).reminders.find((x) => /לאסוף|איסוף/.test(x.text))?.waiting, 0, 'the pickup reminder no longer waits');
+});
+
+test('יאמי: choose this week\'s meals from the last order, then order after a yes', { skip }, async () => {
+  h.config.shopperSecret ??= 'live'; // order tools on; nothing reaches a real shopper here
+  const cook = 'https://www.yummi.co.il/c/dganit';
+  await h.db.set(SCAN_KEY, cleanScan({
+    orders: [{ cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: cook }],
+    last_order: { cook: 'דגנית - היופי שבאוכל', date: '20/07/26', total: '₪ 347', cook_url: cook, details: ['פרטי ההזמנה', 'לאן:', 'סשה ארגוב 4, רעננה', 'למתי:',
+      "יום ב', 20 יולי, 13:00 - 14:00", 'פרטי ההזמנה', 'דיל המנות הפופולריות', "פילה פרגית בחרדל דיז'ון (2 מנות)", 'קציצות פרסה עסיסיות עם בשר (8 יחידות)',
+      'לביבות תפוחי אדמה (10 יחידות)', 'פסטה בולונז (ליטר פסטה+ חצי ליטר רוטב)', 'כמות 1', '₪ 329', 'סכום ביניים'] },
+    cook: { name: 'דגנית - היופי שבאוכל', url: cook, info: ['זמינה למחר', 'מינימום למשלוח 289 ₪'] },
+    menu: ['## מבצעים!', '• דיל המנות הפופולריות [הזמנו בעבר]', '₪ 329', 'מנת עוף - סוג אחד לבחירה:', 'נתחי עוף וירקות ירוקים (2 מנות)', "פילה פרגית בחרדל דיז'ון (2 מנות)",
+      'קציצות - סוג אחד לבחירה:', 'קציצות פרסה עסיסיות עם בשר (8 יחידות)', 'קבב עסיסי (8 יחידות)', 'מנה קלילה - סוג אחד לבחירה:', 'לביבות תפוחי אדמה (10 יחידות)',
+      'קציצות עדשים שחורות ופטריות (8 יחידות)', 'מנה לכל המשפחה - סוג אחד לבחירה:', 'פסטה בולונז (ליטר פסטה+ חצי ליטר רוטב)', 'קציצות עוף אפויות שילדים אוהבים (8 יחידות)',
+      '', '## מרקים', '• מרק עדשים מחמם ומפנק – מרק עדשים עשיר עם ירקות · ליטר · ₪ 48'].join('\n'),
+  }, 1, h.now()));
+  const r = await say('בוט, מה נזמין השבוע מיאמי? כמו בפעם הקודמת, אבל קבב במקום קציצות הפרסה, ותוסיף מרק עדשים');
+  assert.equal((await h.db.get('order:job'))?.kind === 'fill', false, `no order before a yes: ${r.reply}`);
+  assert.match(r.reply, /קבב/);
+  assert.match(r.reply, /מרק עדשים/);
+  await say('בוט, כן, מאשר');
+  const job = await h.db.get('order:job');
+  assert.equal(job?.store, 'yummi', `ordered: ${JSON.stringify(job)}`);
+  assert.ok(job.items.some((i) => /דיל המנות/.test(i.text) && /קבב/.test(i.note ?? '')), `deal with kebab: ${JSON.stringify(job.items)}`);
+  assert.ok(job.items.some((i) => /מרק עדשים/.test(i.text)), 'soup added');
+  assert.equal(job.cook_url, cook);
 });

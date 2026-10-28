@@ -1,25 +1,44 @@
 // Fills a store cart in the home browser for one confirmed order. Claude reads each page (numbered elements + text)
-// and picks the next action; the steps it may take are in .claude/skills/carrefour-order/SKILL.md.
+// and picks the next action; the steps it may take are in the store's skill (.claude/skills/<store>-order/SKILL.md).
 // Code-level guards: it never presses a final order/pay button and never types into card fields.
 import { readFileSync } from 'node:fs';
 import { sleep } from './cdp.mjs';
 
-const SKILL = new URL('../.claude/skills/carrefour-order/SKILL.md', import.meta.url);
-// "סיום הזמנה" is Carrefour's final button; "לסיום קנייה" (cart -> checkout) stays allowed.
-const PAY = /(בצע|אשר|שלח|סיים|השלם)\s*(את\s*)?ה?(הזמנה|רכישה|תשלום)|סיום\s*(ה)?הזמנה|לשלם עכשיו|^שלם|^תשלום$|place order|pay now|confirm order|complete purchase/i;
+// "סיום הזמנה" is Carrefour's final button; "לסיום קנייה" (cart -> checkout) and יאמי's "להוספה להזמנה" stay allowed.
+const PAY = /(בצע|אשר|שלח|סיים|השלם)\s*(את\s*)?ה?(הזמנה|רכישה|תשלום)|(סיום|ביצוע|אישור|שליחת)\s*(ה)?הזמנה|לשלם עכשיו|^שלם|^תשלום$|place order|pay now|confirm order|complete purchase/i;
 const CARD = /cc-|card|cvv|cvc|credit|אשראי|תוקף/i;
 const CHALLENGE = /just a moment|רק רגע|attention required/i;
-const ALLOWED_HOST = /(^|\.)carrefour\.co\.il$/;
 const HUMAN_WAIT_MS = 20 * 60_000;
-const CART_URL = 'https://www.carrefour.co.il/cart/summary';
 
-export function skillText() {
-  const md = readFileSync(SKILL, 'utf8').replace(/^---[\s\S]*?---\s*/, '');
+// home: where an order starts; cart: the link for the family when the order stops before checkout (null = the last page).
+export const STORES = {
+  carrefour: {
+    name: 'קרפור', skill: 'carrefour-order', host: /(^|\.)carrefour\.co\.il$/, site: 'https://www.carrefour.co.il/',
+    home: () => 'https://www.carrefour.co.il/', cart: 'https://www.carrefour.co.il/cart/summary',
+  },
+  yummi: {
+    name: 'יאמי', skill: 'yummi-order', host: /(^|\.)yummi\.co\.il$/, site: 'https://www.yummi.co.il/',
+    home: (job) => (job.reorder || !job.cook_url ? 'https://www.yummi.co.il/orders' : job.cook_url), cart: null,
+  },
+};
+
+export function skillText(store = 'carrefour') {
+  const md = readFileSync(new URL(`../.claude/skills/${STORES[store].skill}/SKILL.md`, import.meta.url), 'utf8').replace(/^---[\s\S]*?---\s*/, '');
   return md.split(/^## Maintenance/m)[0].trim();
 }
 
+// What the order is about beyond its items (יאמי: the cook, the delivery address and time, a repeat of the last order).
+function orderNotes(job) {
+  return [
+    job.cook ? `Cook: ${job.cook}${job.cook_url ? ` (${job.cook_url})` : ''}` : '',
+    job.address ? `Delivery address: ${job.address}` : '',
+    job.when ? `Delivery time: ${job.when}` : '',
+    job.reorder ? 'This repeats the last order: use "להזמנה חוזרת" on the first order in הזמנות שלי, then check the cart against the list.' : '',
+  ].filter(Boolean).join('\n');
+}
+
 const TOOLS = [
-  { name: 'navigate', description: 'Open a URL on carrefour.co.il. A full page load: use it rarely (Cloudflare checks fast page loads); search with the search box.', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
+  { name: 'navigate', description: 'Open a URL on the store\'s site. A full page load: use it rarely (Cloudflare checks fast page loads); search with the search box.', input_schema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } },
   { name: 'click', description: 'Click element [i] from the latest snapshot.', input_schema: { type: 'object', properties: { i: { type: 'integer' } }, required: ['i'] } },
   {
     name: 'type', description: 'Replace the text in input [i]; enter=true presses Enter after.',
@@ -62,6 +81,9 @@ const TOOLS = [
  * Returns the final report that was sent.
  */
 export async function shop(job, { browser, claude, report, viewUrl, log = console, pollMs = 10_000 }) {
+  const store = STORES[job.store ?? 'carrefour'];
+  if (!store) throw new Error(`unknown store ${job.store}`);
+  const system = skillText(job.store ?? 'carrefour');
   const results = new Map();
   let humanAsks = 0;
   const askHuman = async (reason) => {
@@ -78,24 +100,25 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
 
   // The tab stopped answering: a fresh tab, and a person if Cloudflare is checking again.
   const recover = async () => {
-    await browser.recover('https://www.carrefour.co.il/');
-    if (CHALLENGE.test(await browser.title())) await askHuman('קרפור מבקש שוב לאשר שאתם לא רובוט. סמנו את התיבה בדף.');
+    await browser.recover(store.home(job));
+    if (CHALLENGE.test(await browser.title())) await askHuman(`${store.name} מבקש שוב לאשר שאתם לא רובוט. סמנו את התיבה בדף.`);
     return `The tab was stuck and was replaced; you are on the home page.\n\n${await browser.snapshot()}`;
   };
 
-  await browser.navigate('https://www.carrefour.co.il/');
-  if (CHALLENGE.test(await browser.title())) await askHuman('קרפור מבקש לאשר שאתם לא רובוט. סמנו את התיבה בדף.');
+  await browser.navigate(store.home(job));
+  if (CHALLENGE.test(await browser.title())) await askHuman(`${store.name} מבקש לאשר שאתם לא רובוט. סמנו את התיבה בדף.`);
 
   const list = job.items.map((it) => {
     const { id, text, ...f } = it;
     return `- item_id ${id}: ${text}${Object.keys(f).length ? ` ${JSON.stringify(f)}` : ''}`;
   }).join('\n');
-  const messages = [{ role: 'user', content: `The confirmed shopping list (${job.items.length} items):\n${list}\n\nCurrent page:\n${await browser.snapshot()}` }];
+  const notes = orderNotes(job);
+  const messages = [{ role: 'user', content: `The confirmed shopping list (${job.items.length} items):\n${list}${notes ? `\n\n${notes}` : ''}\n\nCurrent page:\n${await browser.snapshot()}` }];
   const maxSteps = 40 + job.items.length * 12;
   let final = null;
 
   for (let step = 0; step < maxSteps && !final; step++) {
-    const resp = await claude({ system: skillText(), tools: TOOLS, messages });
+    const resp = await claude({ system, tools: TOOLS, messages });
     messages.push({ role: 'assistant', content: resp.content });
     const uses = resp.content.filter((b) => b.type === 'tool_use');
     if (!uses.length) {
@@ -126,15 +149,15 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
   async function act(name, input) {
     switch (name) {
       case 'navigate': {
-        const u = new URL(input.url, 'https://www.carrefour.co.il/');
-        if (!ALLOWED_HOST.test(u.hostname)) return 'ERROR: only carrefour.co.il';
+        const u = new URL(input.url, store.site);
+        if (!store.host.test(u.hostname)) return `ERROR: only ${new URL(store.site).hostname.replace(/^www\./, '')}`;
         await browser.navigate(u.href);
         break;
       }
       case 'click': {
         const d = await browser.describe(input.i);
         if (d && PAY.test(d.text)) return `BLOCKED: "${d.text}" places or pays the order. The family pays themselves. Call finish.`;
-        if (d && /מחק עגלת|רוקן|empty cart/i.test(d.text)) return `BLOCKED: "${d.text}" empties the family's cart.`;
+        if (d && /מחק עגלת|רוקן|ריקון|empty cart/i.test(d.text)) return `BLOCKED: "${d.text}" empties the family's cart.`;
         await browser.click(input.i);
         break;
       }
@@ -175,7 +198,8 @@ export async function shop(job, { browser, claude, report, viewUrl, log = consol
   const r = done
     ? {
       status: 'done', added, missing, total: final.total, below_minimum: final.below_minimum, note: final.note,
-      checkout_url: final.reached_checkout ? await browser.url() : CART_URL,
+      ...(job.store === 'yummi' && viewUrl ? { view_url: viewUrl } : {}),
+      checkout_url: final.reached_checkout || !store.cart ? await browser.url() : store.cart,
     }
     : { status: 'failed', text: final?.note ?? 'נגמרו לי הצעדים לפני שהגעתי לתשלום.', added, missing };
   await report(r);

@@ -2,9 +2,10 @@
 
 ## Layout
 Two projects side by side, each with its own package.json and tests:
-- `family-bot/` – the Telegram bot (Cloudflare Worker + D1). Its `/shopper/*` endpoints and `order_start` tool queue online orders.
-- `shopper/` – runs on the home machine (agent-box): takes confirmed orders from the Worker and fills the Carrefour cart in
-  Chromium. Its instructions are the skill `.claude/skills/carrefour-order`.
+- `family-bot/` – the Telegram bot (Cloudflare Worker + D1). Its `/shopper/*` endpoints and `order_start` tool queue online orders;
+  `meals_menu` and the weekly suggestion (src/yummi.mjs) read the family's יאמי account through the shopper.
+- `shopper/` – runs on the home machine (agent-box): takes confirmed orders from the Worker and fills the Carrefour or יאמי cart in
+  Chromium. Its instructions are the skills `.claude/skills/carrefour-order` and `.claude/skills/yummi-order`.
 `npm test`, `npm run test:live` and `npm run deploy` at the repo root run them for both / for the bot.
 
 ## After every request

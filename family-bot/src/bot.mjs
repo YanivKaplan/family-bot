@@ -4,6 +4,7 @@ import { Claude } from './claude.mjs';
 import { contextBlock } from './prompt.mjs';
 import { HELP, formatLists, formatReminders, formatDigest, formatReminderList, reminderButtons } from './format.mjs';
 import { startOrder } from './order.mjs';
+import { SCAN_KEY, weeklyScan, againOrder } from './yummi.mjs';
 import { localDate, localDateTime, localParts, zonedToUtc, nextOccurrence, distanceM, formatHe } from './time.mjs';
 import { GoogleCalendar, pullCalendar, connectLink, isConnected } from './calendar.mjs';
 
@@ -188,6 +189,7 @@ export class FamilyBot {
     const { db, cfg } = this;
     const msg = q.message;
     if (!msg?.chat || !this.isAllowed(msg.chat, q.from)) return this.tg.answerCallback(q.id);
+    if (/^y:/.test(q.data ?? '')) return this.onMealsButton(q);
     const m = /^r:(\d+):(done|h1|d1|order)$/.exec(q.data ?? '');
     const r = m && await db.reminder(m[1]);
     if (!r || r.chat_id !== msg.chat.id) return this.tg.answerCallback(q.id, 'התזכורת הזו כבר לא קיימת');
@@ -222,6 +224,37 @@ export class FamilyBot {
     }
     await this.tg.editText(msg.chat.id, msg.message_id, `${msg.text ?? ''}\n${line}`);
     return this.tg.answerCallback(q.id);
+  }
+
+  // ---- buttons under the weekly יאמי suggestion: the same again / choose meals (a talk with Claude) / not this week.
+  async onMealsButton(q) {
+    const { db, cfg } = this;
+    const msg = q.message;
+    const m = /^y:(\d+):(again|pick|skip)$/.exec(q.data);
+    const scan = await db.get(SCAN_KEY);
+    if (!m || !scan || String(scan.id) !== m[1]) return this.tg.answerCallback(q.id, 'ההצעה הזו כבר לא בתוקף');
+    const user = q.from.first_name ?? 'מישהו';
+    let line;
+    if (m[2] === 'again') {
+      if (!cfg.shopperSecret || !scan.last_order?.meals.length) return this.tg.answerCallback(q.id, 'הזמנה אונליין לא מוגדרת');
+      try {
+        await startOrder(db, { chatId: msg.chat.id, by: user, ...againOrder(scan) });
+      } catch (err) {
+        return this.tg.answerCallback(q.id, err.message);
+      }
+      line = `🔁 ${user} ביקש/ה אותו דבר. הרובוט ממלא את הסל ביאמי ויכתוב כאן כשהוא מוכן.`;
+    } else if (m[2] === 'skip') {
+      line = `🙅 לא השבוע (${user})`;
+    } else {
+      line = `🍲 ${user} בוחר/ת מנות`;
+    }
+    await this.tg.editText(msg.chat.id, msg.message_id, `${msg.text ?? ''}\n\n${line}`);
+    await this.tg.answerCallback(q.id);
+    if (m[2] === 'pick') {
+      const note = `${user} לחץ/ה "לבחור מנות" בהצעה השבועית של יאמי. קרא ל-meals_menu, הצע בקצרה 2–3 כיוונים מהתפריט ` +
+        '(לפי מה שהזמינו בעבר והבחירות בדילים), ושאל מה מתאים להם השבוע.';
+      await this.converse({ chat: msg.chat, from: q.from }, note, { systemNote: true });
+    }
   }
 
   // ---- locations
@@ -279,6 +312,10 @@ export class FamilyBot {
       } catch (err) {
         this.log.error?.('reminder send failed', r.id, err.message);
       }
+    }
+    // The weekly יאמי suggestion: the shopper reads the account first, and its report sends the message.
+    if (cfg.yummiWeekly && cfg.shopperSecret && cfg.mainChat) {
+      await weeklyScan(db, { weekly: cfg.yummiWeekly, tz: cfg.tz, chatId: cfg.mainChat }, now).catch((e) => this.log.error?.('yummi weekly', e.message));
     }
     if (cfg.digestTime && cfg.mainChat) {
       const p = localParts(new Date(now), cfg.tz);

@@ -98,10 +98,13 @@ export class Browser {
         const hover = r.width < 2 && el.tagName === 'BUTTON' && el.getAttribute('aria-label') && !el.closest('[class*=auto-complete], [class*=autocomplete], [role=listbox]') ? cardOf(el) : null;
         if (hover) r = hover.getBoundingClientRect();
         else if (r.width < 2 || r.height < 2 || st.visibility === 'hidden' || st.display === 'none') continue;
-        if (el.disabled || r.bottom < -400 || r.top > innerHeight + 1600 || el.closest('nav')) continue; // nav: the long category menus
+        // Long navs are the category menus; a short one is the header (cart, account).
+        if (el.disabled || r.bottom < -400 || r.top > innerHeight + 1600 || el.closest('nav')?.querySelectorAll('a, button').length > 40) continue;
         const i = out.length;
         el.setAttribute('data-shop-i', i);
-        const label = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.title || el.alt || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+        // Checkboxes and radios: their label says which choice it is (their value is just "on").
+        const choice = /^(checkbox|radio)$/.test(el.type) ? [...(el.labels ?? [])].map((l) => l.innerText).join(' ') + (el.checked ? ' (checked)' : '') : '';
+        const label = (el.getAttribute('aria-label') || choice || el.innerText || el.value || el.getAttribute('placeholder') || el.title || el.alt || '').replace(/\\s+/g, ' ').trim().slice(0, 80);
         const type = el.tagName.toLowerCase() + (el.type && el.tagName === 'INPUT' ? ':' + el.type : '');
         out.push('[' + i + '] ' + type + ' "' + label + '"' + (r.top > innerHeight ? ' (below)' : ''));
         if (out.length >= 220) break;

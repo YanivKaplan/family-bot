@@ -89,3 +89,35 @@ test('a cart under the site minimum is still handed over, with the cart link and
   assert.equal(r.below_minimum, '₪192.00');
   assert.equal(r.checkout_url, 'https://www.carrefour.co.il/cart/summary');
 });
+
+test('יאמי: starts at the cook, knows the address and time, stays on yummi.co.il, and is stopped at its final buttons', async () => {
+  const browser = fakeBrowser([{ text: 'להוספה להזמנה ₪ 329' }, { text: 'ביצוע הזמנה' }, { text: 'אישור הזמנה' }]);
+  const claude = scripted([
+    [['click', { i: 0 }], ['item_result', { item_id: 1, status: 'added', product: 'דיל המנות הפופולריות: פרגית, קבב', qty: 1 }]],
+    [['navigate', { url: 'https://www.carrefour.co.il/' }], ['click', { i: 1 }], ['click', { i: 2 }]],
+    [['finish', { reached_checkout: true, total: '₪347', note: "יום ב' 13:00" }]],
+  ]);
+  const job = {
+    id: 4, store: 'yummi', cook: 'דגנית', cook_url: 'https://www.yummi.co.il/c/d', address: 'סשה ארגוב 4, רעננה', when: "יום ב' 13:00-14:00",
+    items: [{ id: 1, text: 'דיל המנות הפופולריות', note: 'פרגית, קבב' }],
+  };
+  const r = await shop(job, { browser, claude, report: async () => {}, viewUrl: 'http://v', log: {} });
+  assert.match(claude.calls[0].system, /יאמי/);
+  assert.match(claude.calls[0].messages[0].content, /Cook: דגנית \(https:\/\/www\.yummi\.co\.il\/c\/d\)\nDelivery address: סשה ארגוב 4, רעננה\nDelivery time: יום ב' 13:00-14:00\n\nCurrent page:\nURL: https:\/\/www\.yummi\.co\.il\/c\/d/);
+  const results = claude.calls[0].messages[4].content.map((b) => b.content);
+  assert.match(results[0], /only yummi\.co\.il/);
+  assert.match(results[1], /^BLOCKED/);
+  assert.match(results[2], /^BLOCKED/);
+  assert.deepEqual(browser.clicks, [0]);
+  assert.equal(r.status, 'done');
+  assert.equal(r.checkout_url, 'https://www.yummi.co.il/c/d', 'no fixed cart page: the page it stopped on');
+  assert.equal(r.view_url, 'http://v');
+});
+
+test('a repeat of the last יאמי order starts at הזמנות שלי', async () => {
+  const browser = fakeBrowser([{ text: 'x' }]);
+  const claude = scripted([[['finish', { reached_checkout: false, note: 'לא' }]]]);
+  await shop({ id: 5, store: 'yummi', reorder: true, cook_url: 'https://www.yummi.co.il/c/d', items: [{ id: 1, text: 'דיל' }] },
+    { browser, claude, report: async () => {}, log: {} });
+  assert.match(claude.calls[0].messages[0].content, /להזמנה חוזרת[\s\S]*URL: https:\/\/www\.yummi\.co\.il\/orders/);
+});
